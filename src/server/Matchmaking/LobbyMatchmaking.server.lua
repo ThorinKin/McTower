@@ -9,11 +9,14 @@ local HttpService = game:GetService("HttpService")
 local MatchDefs = require(ReplicatedStorage.Shared.Match.MatchDefs)
 local DungeonConfig = require(ReplicatedStorage.Shared.Config.DungeonConfig)
 
+print("[LobbyMatchmaking] 版本：2026-03-05 16:44")
+
 -- 私服不跑大厅匹配
 if MatchDefs.IsBattlePrivateServer() then
 	return
 end
 
+-- 暂时不拆分 Place 就用一个 Place 先依赖 Streaming 功能
 -- 拆分 Place 的时候，把 BATTLE_PLACE_ID 改成战斗 PlaceId
 local BATTLE_PLACE_ID = game.PlaceId
 -- 匹配规则

@@ -9,36 +9,36 @@ local DungeonConfig = {
 		BossId = "boss_1",
 
 		GoldReward = {
-			Easy   = 120,
-			Normal = 200,
-			Hard   = 320,
+			Easy   = 1000,
+			Normal = 2500,
+			Hard   = 5000,
 		},
 
 		DiamondReward = {
-			Easy   = 0,
-			Normal = 1,
-			Hard   = 2,
+			Easy   = 5,
+			Normal = 7,
+			Hard   = 10,
 		},
 
 		StartMoney = {
-			Easy    = 60,
-			Normal  = 45,
-			Hard    = 35,
-			Endless = 35,
+			Easy    = 300,
+			Normal  = 700,
+			Hard    = 1500,
+			Endless = 1500,
 		},
 
 		StartDoorLevel = {
-			Easy    = 3,
-			Normal  = 2,
-			Hard    = 1,
-			Endless = 1,
+			Easy    = 1,
+			Normal  = 3,
+			Hard    = 5,
+			Endless = 5,
 		},
 
 		StartBossLevel = {
 			Easy    = 1,
-			Normal  = 6,
-			Hard    = 12,
-			Endless = 12,
+			Normal  = 5,
+			Hard    = 15,
+			Endless = 15,
 		},
 
 		BossMaxLevel = {
@@ -49,60 +49,60 @@ local DungeonConfig = {
 
 		MaxWaves = {
 			Easy   = 10,
-			Normal = 15,
-			Hard   = 20,
+			Normal = 20,
+			Hard   = 25,
 		},
 	},
 
 	Level_2 = {
 		Id = "Level_2",
 		Name = "Level_2",
-		DoorId = "door_2",
-		BossId = "boss_2",
+		DoorId = "door_1",
+		BossId = "boss_1",
 
 		GoldReward = {
-			Easy   = 200,
-			Normal = 320,
-			Hard   = 520,
+			Easy   = 2000,
+			Normal = 4000,
+			Hard   = 7500,
 		},
 
 		DiamondReward = {
-			Easy   = 1,
-			Normal = 2,
-			Hard   = 4,
+			Easy   = 6,
+			Normal = 8,
+			Hard   = 10,
 		},
 
 		StartMoney = {
-			Easy    = 70,
-			Normal  = 55,
-			Hard    = 40,
-			Endless = 40,
+			Easy    = 1000,
+			Normal  = 2000,
+			Hard    = 5000,
+			Endless = 5000,
 		},
 
 		StartDoorLevel = {
-			Easy    = 4,
-			Normal  = 3,
-			Hard    = 2,
-			Endless = 2,
+			Easy    = 2,
+			Normal  = 4,
+			Hard    = 6,
+			Endless = 6,
 		},
 
 		StartBossLevel = {
-			Easy    = 8,
-			Normal  = 16,
-			Hard    = 24,
-			Endless = 24,
+			Easy    = 5,
+			Normal  = 10,
+			Hard    = 20,
+			Endless = 20,
 		},
 
 		BossMaxLevel = {
-			Easy   = 40,
-			Normal = 75,
-			Hard   = 95,
+			Easy   = 15,
+			Normal = 30,
+			Hard   = 45,
 		},
 
 		MaxWaves = {
-			Easy   = 15,
-			Normal = 25,
-			Hard   = 35,
+			Easy   = 10,
+			Normal = 20,
+			Hard   = 25,
 		},
 	},
 }
