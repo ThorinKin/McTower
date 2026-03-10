@@ -114,18 +114,17 @@ function BattleSession:Start()
 		tostring(self.ctx.sessionId), #Players:GetPlayers()))
 
 	-------------------------------------------------------预留服务：Territory/Currency/Door/Tower/Boss/Result ↓
-	-- 注意：服务模块你后面逐个实现
 	local TerritoryService = require(script.Parent.Services:WaitForChild("TerritoryService"))
 	local CurrencyService  = require(script.Parent.Services:WaitForChild("CurrencyService"))
-	-- local DoorService      = require(script.Parent.Services:WaitForChild("DoorService"))
-	-- local TowerService     = require(script.Parent.Services:WaitForChild("TowerService"))
+	local DoorService      = require(script.Parent.Services:WaitForChild("DoorService"))
+	local TowerService     = require(script.Parent.Services:WaitForChild("TowerService"))
 	-- local BossService      = require(script.Parent.Services:WaitForChild("BossService"))
 	-- local ResultService    = require(script.Parent.Services:WaitForChild("ResultService"))
 
 	self:AddService("Territory", TerritoryService.new(self))
 	self:AddService("Currency",  CurrencyService.new(self))
-	-- self:AddService("Door",      DoorService.new(self))
-	-- self:AddService("Tower",     TowerService.new(self))
+	self:AddService("Door",      DoorService.new(self))
+	self:AddService("Tower",     TowerService.new(self))
 	-- self:AddService("Boss",      BossService.new(self))
 	-- self:AddService("Result",    ResultService.new(self))
 

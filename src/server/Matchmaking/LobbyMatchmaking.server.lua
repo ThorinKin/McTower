@@ -9,7 +9,7 @@ local HttpService = game:GetService("HttpService")
 local MatchDefs = require(ReplicatedStorage.Shared.Match.MatchDefs)
 local DungeonConfig = require(ReplicatedStorage.Shared.Config.DungeonConfig)
 
-print("[LobbyMatchmaking] 版本：2026-03-05 16:44")
+print("[LobbyMatchmaking] 版本：2026-03-06 18:41")
 
 -- 私服不跑大厅匹配
 if MatchDefs.IsBattlePrivateServer() then

@@ -1,5 +1,5 @@
 -- ServerScriptService/Server/Battle/Services/CurrencyService.lua
--- 总注释：局内货币系统，服务器权威；只由经济类塔增加，只用于升级塔/门消耗
+-- 总注释：局内货币系统，服务器权威；目前只由经济类塔增加，只用于局内升级塔或门消耗
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -95,7 +95,7 @@ function CurrencyService:SetMoney(userId, newMoney, reason)
 	end
 
 	----------------------------------------预留：打点 reason（以后接日志/埋点）
-	print("[Currency] SetMoney", userId, v, reason)
+	-- print("[Currency] SetMoney", userId, v, reason)
 end
 
 function CurrencyService:AddMoney(userId, delta, reason)

@@ -1,19 +1,58 @@
 -- ServerScriptService/Server/Battle/Services/TerritoryService.lua
--- 总注释：小块地（Room）占领系统，遍历 Rooms -> 监听 Capture 触发器 -> 第一次触碰即占领
+-- 总注释：小块地（Room）占领系统。场景结构统一带 Rooms 文件夹
+-- 遍历 Rooms 文件夹，每个 Room 统一带 Capture 文件夹，内含 part 作为触发器（锚定/关碰撞/可触摸/不可查询），监听，第一次触碰即占领
+-- 每个 Room 统一带 Cells 文件夹，内含约几十个 part 作为摆放塔的格子（锚定/关碰撞/不可触摸/可查询）
 local Players = game:GetService("Players")
 
 local TerritoryService = {}
 TerritoryService.__index = TerritoryService
 
+local function getTrailingNumber(name)
+	local s = tostring(name or "")
+	local num = string.match(s, "(%d+)$")
+	return tonumber(num) or math.huge
+end
+
+function TerritoryService:BindOnRoomClaimed(callback)
+	if typeof(callback) ~= "function" then
+		return function() end
+	end
+	table.insert(self.onRoomClaimed, callback)
+	return function()
+		local idx = table.find(self.onRoomClaimed, callback)
+		if idx then
+			table.remove(self.onRoomClaimed, idx)
+		end
+	end
+end
+
+function TerritoryService:_getSortedRoomsArray()
+	local arr = {}
+	for room in pairs(self.rooms) do
+		table.insert(arr, room)
+	end
+
+	table.sort(arr, function(a, b)
+		local na = getTrailingNumber(a.Name)
+		local nb = getTrailingNumber(b.Name)
+		if na == nb then
+			return a.Name < b.Name
+		end
+		return na < nb
+	end)
+
+	return arr
+end
+
 function TerritoryService.new(session)
 	local self = setmetatable({}, TerritoryService)
 	self.session = session
-
 	-- 房间数据：roomModel -> { ownerUserId, triggers, cells, conns }
 	self.rooms = {}
-
 	-- 玩家占领：userId -> roomModel
 	self.playerRoom = {}
+	-- 占领事件监听：{ function(player, room) end, ... }
+	self.onRoomClaimed = {}
 
 	return self
 end
@@ -53,14 +92,11 @@ end
 function TerritoryService:_bindRoom(room)
 	-- Capture 触发器文件夹
 	local captureFolder = room:FindFirstChild("Capture")
-	if not captureFolder then
-		captureFolder = room:FindFirstChild("Door")
-	end
 	if not captureFolder or not captureFolder:IsA("Folder") then
 		warn("[Territory] Capture folder not found in room:", room.Name)
 		return
 	end
-	---------------------------------------- Cells 文件夹（塔格子预留）
+	-- Cells 文件夹
 	local cellsFolder = room:FindFirstChild("Cells")
 	if not cellsFolder then
 		warn("[Territory] Cells folder not found in room:", room.Name)
@@ -84,8 +120,32 @@ function TerritoryService:_bindRoom(room)
 				table.insert(cells, obj)
 			end
 		end
-	end
 
+		-- pos_1 ~ pos_40 按尾号排序，保证索引稳定
+		table.sort(cells, function(a, b)
+			local na = getTrailingNumber(a.Name)
+			local nb = getTrailingNumber(b.Name)
+			if na == nb then
+				return a.Name < b.Name
+			end
+			return na < nb
+		end)
+
+		-- Cell 固定属性初始化：客户端直接观察
+		for index, cell in ipairs(cells) do
+			cell.CanCollide = false
+			cell.CanTouch = false
+			cell.CanQuery = true
+			cell:SetAttribute("CellIndex", index)
+			cell:SetAttribute("TowerOccupied", nil)
+			cell:SetAttribute("TowerId", nil)
+			cell:SetAttribute("TowerLevel", nil)
+			cell:SetAttribute("TowerOwnerUserId", nil)
+			cell:SetAttribute("TowerCellIndex", nil)
+			cell:SetAttribute("TowerType", nil)
+			cell:SetAttribute("TowerIsBed", nil)
+		end
+	end
 	-- 房间状态
 	self.rooms[room] = {
 		ownerUserId = nil,
@@ -93,7 +153,6 @@ function TerritoryService:_bindRoom(room)
 		cells = cells,
 		conns = {},
 	}
-
 	-- 绑定触发器：碰到任意 Trigger 即尝试占领
 	for _, part in ipairs(triggers) do
 		local conn = part.Touched:Connect(function(hit)
@@ -101,7 +160,6 @@ function TerritoryService:_bindRoom(room)
 		end)
 		table.insert(self.rooms[room].conns, conn)
 	end
-
 	-- 调试用属性
 	room:SetAttribute("OwnerUserId", nil)
 end
@@ -135,21 +193,33 @@ function TerritoryService:TryClaimRoom(player, room)
 
 	r.ownerUserId = player.UserId
 	self.playerRoom[player.UserId] = room
-
 	-- 调试用属性
 	room:SetAttribute("OwnerUserId", player.UserId)
-
+	-- 玩家自己的房间名客户端优先读
+	player:SetAttribute("BattleRoomName", room.Name)
+	-- 调试
+	print(string.format(
+		"[Territory] set BattleRoomName. userId=%d room=%s playerAttr=%s",
+		player.UserId,
+		room.Name,
+		tostring(player:GetAttribute("BattleRoomName"))
+	))
 	-- 占领成功后断开触发器监听
 	for _, conn in ipairs(r.conns) do
 		if conn then conn:Disconnect() end
 	end
 	r.conns = {}
-
+	-- 调试
 	print(string.format("[Territory] claimed. room=%s userId=%d", room.Name, player.UserId))
-
-	---------------------------------------- 预留占领后生成门/床（DoorService 做）
-	---------------------------------------- 预留给玩家分配可用 Cells（TowerService 做）
-
+	-- 占领事件：DoorService / TowerService 可绑定
+	for _, callback in ipairs(self.onRoomClaimed) do
+		local ok, err = pcall(function()
+			callback(player, room)
+		end)
+		if not ok then
+			warn("[Territory] onRoomClaimed callback failed:", err)
+		end
+	end
 	return true
 end
 
@@ -157,9 +227,32 @@ function TerritoryService:GetRoomByUserId(userId)
 	return self.playerRoom[userId]
 end
 
-function TerritoryService:GetCellsOfRoom(room)
-	local r = self.rooms[room]
-	if not r then return nil end
+function TerritoryService:GetCellsOfRoom(room, cellIndex)
+	local targetRoom = room
+	-- 支持按房间序号取：GetCellsOfRoom(1)
+	if typeof(room) == "number" then
+		local rooms = self:_getSortedRoomsArray()
+		targetRoom = rooms[room]
+	elseif typeof(room) == "string" then
+		-- 支持按房间名取：GetCellsOfRoom("Room_1")
+		targetRoom = nil
+		for roomModel in pairs(self.rooms) do
+			if roomModel.Name == room then
+				targetRoom = roomModel
+				break
+			end
+		end
+	end
+	local r = self.rooms[targetRoom]
+	if not r then
+		return nil
+	end
+	-- 支持按格子序号取：GetCellsOfRoom(room, 3)
+	if cellIndex ~= nil then
+		local idx = tonumber(cellIndex)
+		if idx == nil then return nil end
+		return r.cells[idx]
+	end
 	return r.cells
 end
 
@@ -180,10 +273,15 @@ function TerritoryService:Cleanup()
 			room:SetAttribute("OwnerUserId", nil)
 		end
 	end
-
+	-- 清掉玩家身上的房间标记
+	for _, player in ipairs(Players:GetPlayers()) do
+		pcall(function()
+			player:SetAttribute("BattleRoomName", nil)
+		end)
+	end
 	self.rooms = {}
 	self.playerRoom = {}
-
+	self.onRoomClaimed = {}
 	print("[Territory] cleanup done")
 end
 

@@ -51,6 +51,7 @@ local function ensureSceneLoaded(tp)
 	end
 	-- 场景 Model 名：Level_1 / Level_2（来自 dungeon.Id）
 	local sceneName = dungeon.Id
+	-- 场景路径在 ServerStorage/Scenes 内
 	local sceneModel = ScenesFolder:FindFirstChild(sceneName)
 	if not sceneModel then
 		warn("[Battle] Scene model not found:", sceneName, "in ServerStorage/Scenes")
@@ -81,7 +82,7 @@ local function ensureSceneLoaded(tp)
 	return true
 end
 
--- 场景下文件夹 Spawns，里面放 Part 
+-- 场景下统一带文件夹 Spawns，里面放4个 Part（最多4个玩家）
 local function getSpawnPoints()
 	if Session.scene then
 		local spawns = Session.scene:FindFirstChild("Spawns")
@@ -128,6 +129,14 @@ Players.PlayerAdded:Connect(function(player)
 		TeleportService:Teleport(game.PlaceId, player)
 		return
 	end
+	-- 明确打一个玩家属性，供 LocalScript 判断是否战斗
+	player:SetAttribute("BattleIsSession", true)
+	print(string.format(
+		"[Battle] PlayerAdded battle userId=%d privateServerId=%s jobId=%s",
+		player.UserId,
+		tostring(game.PrivateServerId),
+		tostring(game.JobId)
+	))
 	local okLoaded = ensureSceneLoaded(tp)
 	if not okLoaded or not Session.runtime then
 		-- TeleportData 有问题 / 场景缺失：这局无法开，直接踢回大厅，避免玩家卡死在私服
