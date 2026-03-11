@@ -98,13 +98,13 @@ local function ensureSelector()
 end
 
 -- 调试：同样的状态不重复刷屏
-local _lastDebugMsg = nil
-local function debugOnce(msg)
-	if _lastDebugMsg == msg then
+local _lastDebugKey = nil
+local function debugOnce(debugKey, msg)
+	if _lastDebugKey == debugKey then
 		return
 	end
-	_lastDebugMsg = msg
-	print("[BattleCellSelection] " .. msg)
+	_lastDebugKey = debugKey
+	print("[BattleCellSelection] " .. tostring(msg))
 end
 
 local function buildRoomsDebug(roomsFolder)
@@ -127,16 +127,24 @@ local function buildRoomsDebug(roomsFolder)
 	return table.concat(arr, ", ")
 end
 
-local function clearLocalSelectionAttrs()
-	LocalPlayer:SetAttribute("BattleSelectedRoomName", nil)
-	LocalPlayer:SetAttribute("BattleSelectedCellIndex", nil)
+local function setPlayerAttrIfChanged(attrName, value)
+	local oldValue = LocalPlayer:GetAttribute(attrName)
+	if oldValue == value then
+		return
+	end
+	LocalPlayer:SetAttribute(attrName, value)
+end
 
-	LocalPlayer:SetAttribute("BattleSelectedTowerOccupied", nil)
-	LocalPlayer:SetAttribute("BattleSelectedTowerId", nil)
-	LocalPlayer:SetAttribute("BattleSelectedTowerLevel", nil)
-	LocalPlayer:SetAttribute("BattleSelectedTowerOwnerUserId", nil)
-	LocalPlayer:SetAttribute("BattleSelectedTowerType", nil)
-	LocalPlayer:SetAttribute("BattleSelectedTowerIsBed", nil)
+local function clearLocalSelectionAttrs()
+	setPlayerAttrIfChanged("BattleSelectedRoomName", nil)
+	setPlayerAttrIfChanged("BattleSelectedCellIndex", nil)
+
+	setPlayerAttrIfChanged("BattleSelectedTowerOccupied", nil)
+	setPlayerAttrIfChanged("BattleSelectedTowerId", nil)
+	setPlayerAttrIfChanged("BattleSelectedTowerLevel", nil)
+	setPlayerAttrIfChanged("BattleSelectedTowerOwnerUserId", nil)
+	setPlayerAttrIfChanged("BattleSelectedTowerType", nil)
+	setPlayerAttrIfChanged("BattleSelectedTowerIsBed", nil)
 end
 
 local function syncLocalSelectionAttrs(room, cell)
@@ -145,15 +153,15 @@ local function syncLocalSelectionAttrs(room, cell)
 		return
 	end
 
-	LocalPlayer:SetAttribute("BattleSelectedRoomName", room.Name)
-	LocalPlayer:SetAttribute("BattleSelectedCellIndex", cell:GetAttribute("CellIndex"))
+	setPlayerAttrIfChanged("BattleSelectedRoomName", room.Name)
+	setPlayerAttrIfChanged("BattleSelectedCellIndex", cell:GetAttribute("CellIndex"))
 
-	LocalPlayer:SetAttribute("BattleSelectedTowerOccupied", cell:GetAttribute("TowerOccupied"))
-	LocalPlayer:SetAttribute("BattleSelectedTowerId", cell:GetAttribute("TowerId"))
-	LocalPlayer:SetAttribute("BattleSelectedTowerLevel", cell:GetAttribute("TowerLevel"))
-	LocalPlayer:SetAttribute("BattleSelectedTowerOwnerUserId", cell:GetAttribute("TowerOwnerUserId"))
-	LocalPlayer:SetAttribute("BattleSelectedTowerType", cell:GetAttribute("TowerType"))
-	LocalPlayer:SetAttribute("BattleSelectedTowerIsBed", cell:GetAttribute("TowerIsBed"))
+	setPlayerAttrIfChanged("BattleSelectedTowerOccupied", cell:GetAttribute("TowerOccupied"))
+	setPlayerAttrIfChanged("BattleSelectedTowerId", cell:GetAttribute("TowerId"))
+	setPlayerAttrIfChanged("BattleSelectedTowerLevel", cell:GetAttribute("TowerLevel"))
+	setPlayerAttrIfChanged("BattleSelectedTowerOwnerUserId", cell:GetAttribute("TowerOwnerUserId"))
+	setPlayerAttrIfChanged("BattleSelectedTowerType", cell:GetAttribute("TowerType"))
+	setPlayerAttrIfChanged("BattleSelectedTowerIsBed", cell:GetAttribute("TowerIsBed"))
 end
 
 local function clearSelection()
@@ -320,6 +328,7 @@ end
 
 RunService.RenderStepped:Connect(function()
 	if not isBattleClientEnabled() then
+		debugOnce("NotBattleClient", "NotBattleClient")
 		clearSelection()
 		return
 	end
@@ -327,26 +336,27 @@ RunService.RenderStepped:Connect(function()
 	local character = LocalPlayer.Character
 	local hrp = character and character:FindFirstChild("HumanoidRootPart")
 	if not hrp then
-		debugOnce("NoHRP")
+		debugOnce("NoHRP", "NoHRP")
 		clearSelection()
 		return
 	end
 
 	local ownRoom, roomDebug = getOwnRoom()
 	if not ownRoom then
-		debugOnce(roomDebug)
+		debugOnce("NoOwnRoom", roomDebug)
 		clearSelection()
 		return
 	end
 
 	local cell, cellDebug = getBestCell(ownRoom, hrp.Position)
 	if not cell then
-		debugOnce(roomDebug .. " | " .. cellDebug)
+		debugOnce("NoCellInRange:" .. ownRoom.Name, cellDebug)
 		clearSelection()
 		return
 	end
 
-	debugOnce(roomDebug .. " | " .. cellDebug)
+	local cellIndex = tostring(cell:GetAttribute("CellIndex"))
+	debugOnce("SelectedCell:" .. ownRoom.Name .. ":" .. cellIndex, cellDebug)
 
 	-- 同一个格子持续刷新本地属性 + 高亮位置，避免塔状态变化后本地 HUD 不更新
 	if currentSelectedCell ~= cell then

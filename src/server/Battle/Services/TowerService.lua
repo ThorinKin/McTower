@@ -12,8 +12,11 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local TowerConfig = require(ReplicatedStorage.Shared.Config.TowerConfig)
+local TowerModule = require(ServerScriptService.Server.TowerService.TowerModule)
 
 local TowerService = {}
 TowerService.__index = TowerService
@@ -155,12 +158,13 @@ end
 function TowerService.new(session)
 	local self = setmetatable({}, TowerService)
 	self.session = session
-
 	-- roomModel -> { [cellIndex] = towerState }
 	self.towersByRoom = {}
-
 	self.territory = nil
 	self.currency = nil
+	-- userId -> { [towerId] = true, ... }
+	-- 缓存当前玩家已装备的塔，用于战斗内购买校验
+	self.equippedTowerIdsByUserId = {}
 
 	local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 	self.RE_Request     = ensureRemoteEvent(Remotes, "Battle_TowerRequest")
@@ -170,7 +174,6 @@ function TowerService.new(session)
 	self._requestConn = nil
 	self._claimDisconnect = nil
 	self._clientReadyConn = nil
-
 	-- userId -> true，表示该客户端已经挂好 FX 监听
 	self.readyFxUsers = {}
 
@@ -194,17 +197,18 @@ function TowerService:Start()
 	for room in pairs(self.territory.rooms) do
 		self.towersByRoom[room] = self.towersByRoom[room] or {}
 	end
+	-- 当前玩家先刷新一遍已装备塔缓存
+	for _, player in ipairs(Players:GetPlayers()) do
+		self.readyFxUsers[player.UserId] = nil
+		self:_refreshEquippedTowerCache(player)
+	end
 	-- 客户端 ready：只有 ready 后才给它发纯表现 FX
 	self._clientReadyConn = self.RE_ClientReady.OnServerEvent:Connect(function(player, channel)
 		if channel == nil or channel == "FX" then
 			self.readyFxUsers[player.UserId] = true
 		end
 	end)
-	-- 当前玩家先标成未 ready，等客户端自己来报到
-	for _, player in ipairs(Players:GetPlayers()) do
-		self.readyFxUsers[player.UserId] = nil
-	end
-	-- 绑定占领事件：占领后自动生成床
+	-- 绑定占领事件：占领后自动生成床，同时刷新该玩家的已装备塔缓存
 	self._claimDisconnect = self.territory:BindOnRoomClaimed(function(player, room)
 		self:_onRoomClaimed(player, room)
 	end)
@@ -224,11 +228,73 @@ end
 function TowerService:OnPlayerAdded(player)
 	-- 新玩家进来先标成未 ready，等客户端监听挂好后自己报到
 	self.readyFxUsers[player.UserId] = nil
+	-- 刷新战斗内可购买塔缓存
+	self:_refreshEquippedTowerCache(player)
 end
 
 function TowerService:OnPlayerRemoving(player)
 	self.readyFxUsers[player.UserId] = nil
+	self.equippedTowerIdsByUserId[player.UserId] = nil
 	-- 塔状态按房间存，不跟玩家对象生命周期强绑定
+end
+
+---------------------------------------- 装备塔缓存战斗内购买校验：
+function TowerService:_refreshEquippedTowerCache(player)
+	if not player then
+		return {}
+	end
+	local equippedMap = {}
+	-- 优先直接读 TowerModule 服务器权威
+	local ok, equippedArr = pcall(function()
+		return TowerModule.getEquipped(player)
+	end)
+	if ok and typeof(equippedArr) == "table" then
+		for _, towerId in ipairs(equippedArr) do
+			if typeof(towerId) == "string" and TowerConfig[towerId] ~= nil and towerId ~= "turret_16" then
+				equippedMap[towerId] = true
+			end
+		end
+	else
+		-- 兜底模块读取失败，再尝试读玩家 Attribute（JSON）
+		local raw = player:GetAttribute("TowerEquipped")
+		if typeof(raw) == "string" and raw ~= "" then
+			local okDecode, arr = pcall(function()
+				return HttpService:JSONDecode(raw)
+			end)
+			if okDecode and typeof(arr) == "table" then
+				for _, towerId in ipairs(arr) do
+					if typeof(towerId) == "string" and TowerConfig[towerId] ~= nil and towerId ~= "turret_16" then
+						equippedMap[towerId] = true
+					end
+				end
+			end
+		end
+	end
+	self.equippedTowerIdsByUserId[player.UserId] = equippedMap
+	return equippedMap
+end
+function TowerService:_getEquippedTowerMap(player)
+	if not player then
+		return {}
+	end
+
+	local cached = self.equippedTowerIdsByUserId[player.UserId]
+	if cached ~= nil then
+		return cached
+	end
+
+	return self:_refreshEquippedTowerCache(player)
+end
+function TowerService:_isTowerEquipped(player, towerId)
+	if not player then
+		return false
+	end
+	if typeof(towerId) ~= "string" then
+		return false
+	end
+
+	local equippedMap = self:_getEquippedTowerMap(player)
+	return equippedMap[towerId] == true
 end
 
 ---------------------------------------- 公共查询
@@ -533,49 +599,40 @@ end
 
 function TowerService:SpawnTowerAtCell(room, cellIndex, towerId, ownerUserId, level, options)
 	options = options or {}
-
 	if not room then return false end
 	if typeof(ownerUserId) ~= "number" then return false end
 	if typeof(towerId) ~= "string" then return false end
-
 	local cfg = self:_getTowerConfig(towerId)
 	if not cfg then
 		warn("[Tower] Unknown towerId:", tostring(towerId))
 		return false
 	end
-
 	local cell = self:_getCellPart(room, cellIndex)
 	if not cell then
 		warn("[Tower] invalid cellIndex:", room.Name, cellIndex)
 		return false
 	end
-
 	self.towersByRoom[room] = self.towersByRoom[room] or {}
 	local roomTowers = self.towersByRoom[room]
 	if roomTowers[cellIndex] ~= nil then
 		warn("[Tower] cell already occupied:", room.Name, cellIndex)
 		return false
 	end
-
 	local maxLevel = self:_getMaxLevel(towerId)
 	local lv = math.clamp(tonumber(level) or 1, 1, maxLevel)
 	if not self:_hasTowerAssetLevel(towerId, lv) then
 		warn("[Tower] Missing asset:", towerId, "Lv" .. tostring(lv))
 		return false
 	end
-
 	local towersFolder = getTowerRuntimeFolder(room)
 	local model = self:_cloneTowerAsset(towerId, lv)
 	if not model then
 		return false
 	end
-
 	model.Parent = towersFolder
 	setModelWorldCFrame(model, cell.CFrame)
-
 	local root = getRootPartFromModel(model)
 	local muzzleNode = model:FindFirstChild("Muzzle", true)
-
 	local tower = {
 		room = room,
 		roomName = room.Name,
@@ -596,13 +653,17 @@ function TowerService:SpawnTowerAtCell(room, cellIndex, towerId, ownerUserId, le
 		incomeAcc = 0,
 		nextAttackAt = 0,
 	}
-
 	roomTowers[cellIndex] = tower
 	self:_syncTowerAttrs(tower)
-
+	-- 日志参数显式归一化
+	local roomName = tostring(room.Name)
+	local ownerUserIdNum = tonumber(ownerUserId) or 0
+	local towerIdStr = tostring(towerId)
+	local levelNum = tonumber(lv) or 0
+	local cellIndexNum = tonumber(cellIndex) or 0
+	local isBedStr = tostring(tower.isBed)
 	print(string.format("[Tower] spawned. room=%s userId=%d towerId=%s level=%d cell=%d isBed=%s",
-		room.Name, ownerUserId, towerId, lv, cellIndex, tostring(tower.isBed)))
-
+		roomName, ownerUserIdNum, towerIdStr, levelNum, cellIndexNum, isBedStr))
 	return true
 end
 
@@ -696,6 +757,9 @@ function TowerService:_spawnBedForRoom(room, ownerUserId)
 end
 
 function TowerService:_onRoomClaimed(player, room)
+	-- 占领房间后，刷新一次当前装备塔缓存
+	self:_refreshEquippedTowerCache(player)
+	-- 自动生成床
 	self:_spawnBedForRoom(room, player.UserId)
 end
 
@@ -704,21 +768,28 @@ function TowerService:TryBuyTower(player, towerId, payload)
 	if not room then
 		return false
 	end
-
 	if self:GetTowerOfCell(room, cellIndex) ~= nil then
 		return false
 	end
-
 	local cfg = self:_getTowerConfig(towerId)
 	if not cfg then
 		return false
 	end
-
+	-- 床不允许手动购买
+	if towerId == "turret_16" then
+		return false
+	end
+	-- 购买前兜底刷新一次已装备塔缓存
+	self:_refreshEquippedTowerCache(player)
+	-- 只能购买当前已装备的塔
+	if not self:_isTowerEquipped(player, towerId) then
+		warn(string.format("[Tower] buy rejected. userId=%d towerId=%s not equipped", player.UserId, tostring(towerId)))
+		return false
+	end
 	local cost = self:_getPlaceCost(towerId)
 	if not self.currency:SpendMoney(player.UserId, cost, "BuyTower:" .. towerId) then
 		return false
 	end
-
 	local okSpawn = self:SpawnTowerAtCell(room, cellIndex, towerId, player.UserId, 1, {
 		isBed = false,
 	})
@@ -726,10 +797,8 @@ function TowerService:TryBuyTower(player, towerId, payload)
 		self.currency:AddMoney(player.UserId, cost, "BuyTowerRefund:" .. towerId)
 		return false
 	end
-
 	print(string.format("[Tower] bought. userId=%d towerId=%s room=%s cell=%d cost=%d",
 		player.UserId, towerId, room.Name, cellIndex, cost))
-
 	return true
 end
 
@@ -815,6 +884,42 @@ function TowerService:TrySellSelectedTower(player, payload)
 
 	return true
 end
+
+function TowerService:DestroyTowersOfUserId(userId, reason)
+	local uid = tonumber(userId)
+	if uid == nil then
+		return 0
+	end
+
+	local removedCount = 0
+
+	for room, roomTowers in pairs(self.towersByRoom) do
+		local removeCellIndices = {}
+
+		for cellIndex, tower in pairs(roomTowers) do
+			if tower and tower.ownerUserId == uid then
+				table.insert(removeCellIndices, cellIndex)
+			end
+		end
+
+		table.sort(removeCellIndices)
+
+		for _, cellIndex in ipairs(removeCellIndices) do
+			local removed = self:_removeTowerFromCell(room, cellIndex)
+			if removed then
+				removedCount += 1
+			end
+		end
+	end
+
+	if removedCount > 0 then
+		print(string.format("[Tower] destroy towers of user. userId=%d removed=%d reason=%s",
+			uid, removedCount, tostring(reason)))
+	end
+
+	return removedCount
+end
+
 
 ---------------------------------------- Remote 请求
 
@@ -946,17 +1051,46 @@ function TowerService:_tickAttackTower(tower)
 		tower.nextAttackAt = now + interval
 		return
 	end
-
-	local humanoid, targetPos = self:_findPrimaryHumanoidTarget(tower)
-	if not humanoid or not targetPos then
+	-- 只打当前活着的 Boss
+	local bossService = self.session and self.session.services and self.session.services["Boss"]
+	if not bossService or not bossService.GetCurrentBossRoot or not bossService.ApplyDamage then
 		tower.nextAttackAt = now + NO_TARGET_RETRY_SEC
 		return
 	end
 
-	humanoid:TakeDamage(damage)
-	self:_fireShotFx(tower, targetPos)
+	local bossRoot = bossService:GetCurrentBossRoot()
+	if not bossRoot or not bossRoot.Parent then
+		tower.nextAttackAt = now + NO_TARGET_RETRY_SEC
+		return
+	end
 
-	tower.nextAttackAt = now + interval
+	local range = self:_getRange(tower.towerId, tower.level)
+	if range <= 0 then
+		tower.nextAttackAt = now + interval
+		return
+	end
+
+	local origin = getWorldPositionFromNode(tower.muzzleNode, root)
+	local targetPos = bossRoot.Position
+	local dist = (targetPos - origin).Magnitude
+	if dist > range then
+		tower.nextAttackAt = now + NO_TARGET_RETRY_SEC
+		return
+	end
+
+	local okDamage = bossService:ApplyDamage(damage, {
+		source = "Tower",
+		towerId = tower.towerId,
+		ownerUserId = tower.ownerUserId,
+		level = tower.level,
+	})
+
+	if okDamage then
+		self:_fireShotFx(tower, targetPos)
+		tower.nextAttackAt = now + interval
+	else
+		tower.nextAttackAt = now + NO_TARGET_RETRY_SEC
+	end
 end
 
 function TowerService:Tick(dt)
@@ -976,19 +1110,16 @@ function TowerService:Cleanup()
 		self._requestConn:Disconnect()
 		self._requestConn = nil
 	end
-
 	if self._claimDisconnect then
 		pcall(function()
 			self._claimDisconnect()
 		end)
 		self._claimDisconnect = nil
 	end
-
 	if self._clientReadyConn then
 		self._clientReadyConn:Disconnect()
 		self._clientReadyConn = nil
 	end
-
 	-- 清空所有房间 Cell 上的塔属性
 	if self.territory then
 		for room, roomData in pairs(self.territory.rooms) do
@@ -997,7 +1128,6 @@ function TowerService:Cleanup()
 			end
 		end
 	end
-
 	for _, roomTowers in pairs(self.towersByRoom) do
 		for _, tower in pairs(roomTowers) do
 			if tower.root then
@@ -1009,8 +1139,8 @@ function TowerService:Cleanup()
 			end
 		end
 	end
-
 	self.readyFxUsers = {}
+	self.equippedTowerIdsByUserId = {}
 	self.towersByRoom = {}
 	print("[Tower] cleanup done")
 end

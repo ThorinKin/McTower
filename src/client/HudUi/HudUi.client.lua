@@ -22,8 +22,8 @@ end
 local playerGui = player:WaitForChild("PlayerGui")
 local hudGui = waitPath(playerGui, "HUD")
 
-local goldLabel = waitPath(hudGui, "Lobby", "below", "eco", "gold", "TextLabel") -- TextLabel
-local gemsLabel = waitPath(hudGui, "Lobby", "below", "eco", "gems", "TextLabel") -- TextLabel
+local goldLabel = waitPath(hudGui, "below", "eco", "gold", "TextLabel") -- TextLabel
+local gemsLabel = waitPath(hudGui, "below", "eco", "gems", "TextLabel") -- TextLabel
 
 -- UI 更新
 local function clampInt(n)

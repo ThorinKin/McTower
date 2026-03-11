@@ -21,7 +21,7 @@ local DungeonConfig = {
 		},
 
 		StartMoney = {
-			Easy    = 300,
+			Easy    = 30000, -- 测试
 			Normal  = 700,
 			Hard    = 1500,
 			Endless = 1500,
@@ -45,6 +45,12 @@ local DungeonConfig = {
 			Easy   = 30,
 			Normal = 60,
 			Hard   = 90,
+		},
+
+		WaveTime = {
+			Easy   = 30,
+			Normal = 45,
+			Hard   = 60,
 		},
 
 		MaxWaves = {
@@ -98,6 +104,12 @@ local DungeonConfig = {
 			Normal = 30,
 			Hard   = 45,
 		},
+
+		WaveTime = {
+			Easy   = 30,
+			Normal = 45,
+			Hard   = 60,
+		},		
 
 		MaxWaves = {
 			Easy   = 10,

@@ -156,19 +156,16 @@ function DoorService:Start()
 	end
 
 	self.startDoorLevel = math.clamp(startLv, 1, self:_getMaxLevel(self.doorId))
-
 	-- 绑定占领事件：谁先占领房间，就给谁生成门
 	self._claimDisconnect = self.territory:BindOnRoomClaimed(function(player, room)
 		self:_onRoomClaimed(player, room)
 	end)
-
 	-- 兜底：如果 DoorService 启动时，已经有房间被占领，补生成
 	for room, roomData in pairs(self.territory.rooms) do
 		if roomData.ownerUserId ~= nil and self.doorsByRoom[room] == nil then
 			self:SpawnDoorForRoom(room, roomData.ownerUserId)
 		end
 	end
-
 	-- 统一门请求：Upgrade / Repair
 	self._requestConn = self.RE_Request.OnServerEvent:Connect(function(player, action)
 		self:_onDoorRequest(player, action)
@@ -178,10 +175,7 @@ function DoorService:Start()
 end
 
 function DoorService:OnPlayerAdded(player)
-	local door = self:GetDoorByUserId(player.UserId)
-	if door then
-		self:_pushDoorStateToPlayer(player, door)
-	end
+	self:_pushAllDoorStatesToPlayer(player)
 end
 
 function DoorService:OnPlayerRemoving(_player)
@@ -311,6 +305,11 @@ end
 function DoorService:_syncDoorDebugAttrs(door)
 	if not door then return end
 
+	local now = time()
+	local repairCdRemain = math.max(0, (door.nextRepairAllowedAt or 0) - now)
+	local repairRemain = door.isRepairing and math.max(0, (door.repairEndAt or 0) - now) or 0
+	local nextUpgradeCost = self:_getUpgradeCost(door.doorId, door.level)
+
 	if door.room and door.room.Parent then
 		door.room:SetAttribute("DoorId", door.doorId)
 		door.room:SetAttribute("DoorOwnerUserId", door.ownerUserId)
@@ -319,6 +318,9 @@ function DoorService:_syncDoorDebugAttrs(door)
 		door.room:SetAttribute("DoorMaxHp", math.floor((door.maxHp or 0) + 0.5))
 		door.room:SetAttribute("DoorDestroyed", door.destroyed == true)
 		door.room:SetAttribute("DoorRepairing", door.isRepairing == true)
+		door.room:SetAttribute("DoorRepairCdRemain", repairCdRemain)
+		door.room:SetAttribute("DoorRepairRemain", repairRemain)
+		door.room:SetAttribute("DoorNextUpgradeCost", nextUpgradeCost)
 	end
 
 	if door.root and door.root.Parent then
@@ -327,18 +329,26 @@ function DoorService:_syncDoorDebugAttrs(door)
 		door.root:SetAttribute("DoorLevel", door.level)
 		door.root:SetAttribute("DoorHp", math.floor((door.hp or 0) + 0.5))
 		door.root:SetAttribute("DoorMaxHp", math.floor((door.maxHp or 0) + 0.5))
+		door.root:SetAttribute("DoorRepairCdRemain", repairCdRemain)
+		door.root:SetAttribute("DoorRepairRemain", repairRemain)
+		door.root:SetAttribute("DoorNextUpgradeCost", nextUpgradeCost)
 	end
 end
 
 function DoorService:_buildDoorPayload(door)
 	local now = time()
+	local cfg = DoorConfig[door.doorId]
 
 	return {
 		type = "DoorState",
 		roomName = door.room and door.room.Name or "",
 		ownerUserId = door.ownerUserId,
 		doorId = door.doorId,
+		doorName = (cfg and cfg.Name) or door.doorId,
+
 		level = door.level,
+		maxLevel = self:_getMaxLevel(door.doorId),
+
 		hp = math.floor((door.hp or 0) + 0.5),
 		maxHp = math.floor((door.maxHp or 0) + 0.5),
 		destroyed = door.destroyed == true,
@@ -356,12 +366,25 @@ function DoorService:_pushDoorStateToPlayer(player, door)
 	self.RE_State:FireClient(player, self:_buildDoorPayload(door))
 end
 
+function DoorService:_pushAllDoorStatesToPlayer(player)
+	if not player then return end
+
+	for _, door in pairs(self.doorsByRoom) do
+		self:_pushDoorStateToPlayer(player, door)
+	end
+end
+
 function DoorService:_pushDoorStateToOwner(door)
 	if not door then return end
 	local player = Players:GetPlayerByUserId(door.ownerUserId)
 	if player then
 		self:_pushDoorStateToPlayer(player, door)
 	end
+end
+
+function DoorService:_pushDoorStateToAll(door)
+	if not door then return end
+	self.RE_State:FireAllClients(self:_buildDoorPayload(door))
 end
 
 function DoorService:_replaceDoorModel(door, newLevel)
@@ -396,73 +419,62 @@ function DoorService:SpawnDoorForRoom(room, ownerUserId)
 	if not room or self.doorsByRoom[room] ~= nil then
 		return false
 	end
-
 	if typeof(ownerUserId) ~= "number" then
 		warn("[Door] ownerUserId invalid for room:", room.Name)
 		return false
 	end
-
 	local cfg = DoorConfig[self.doorId]
 	if not cfg then
 		warn("[Door] Config missing. doorId=", tostring(self.doorId))
 		return false
 	end
-
 	local doorSocket, bossTarget = self:_getRoomSockets(room)
 	if not doorSocket then
 		return false
 	end
-
 	local level = math.clamp(self.startDoorLevel, 1, self:_getMaxLevel(self.doorId))
 	if not self:_hasDoorAssetLevel(self.doorId, level) then
 		warn("[Door] Missing start asset:", self.doorId, "Lv" .. tostring(level))
 		return false
 	end
-
 	local runtime = getRuntimeFolder(room)
 	local model = self:_cloneDoorAsset(self.doorId, level)
 	if not model then
 		return false
 	end
-
 	model.Parent = runtime
 	setDoorModelWorldCFrame(model, doorSocket.CFrame)
-
 	local maxHp = self:_getDoorHp(self.doorId, level)
 	local door = {
 		room = room,
 		roomName = room.Name,
 		runtimeFolder = runtime,
-
 		ownerUserId = ownerUserId,
 		doorId = self.doorId,
 		level = level,
-
 		hp = maxHp,
 		maxHp = maxHp,
-
 		model = model,
 		root = getRootPartFromModel(model),
-
 		doorSocket = doorSocket,
 		bossTarget = bossTarget,
-
 		isRepairing = false,
 		repairEndAt = 0,
 		nextRepairAllowedAt = 0,
 		nextRepairSyncAt = 0,
-
 		destroyed = false,
 	}
-
 	self.doorsByRoom[room] = door
-
 	self:_syncDoorDebugAttrs(door)
-	self:_pushDoorStateToOwner(door)
-
+	self:_pushDoorStateToAll(door)
+	-- 日志参数显式归一化
+	local roomName = tostring(room.Name)
+	local ownerUserIdNum = tonumber(ownerUserId) or 0
+	local doorIdStr = tostring(door.doorId)
+	local levelNum = tonumber(door.level) or 0
+	local maxHpNum = tonumber(door.maxHp) or 0
 	print(string.format("[Door] spawned. room=%s ownerUserId=%d doorId=%s level=%d hp=%d",
-		room.Name, ownerUserId, door.doorId, door.level, door.maxHp))
-
+		roomName, ownerUserIdNum, doorIdStr, levelNum, maxHpNum))
 	return true
 end
 
@@ -520,7 +532,7 @@ function DoorService:TryUpgradeDoor(player)
 
 	local okReplace = self:_replaceDoorModel(door, nextLevel)
 	if not okReplace then
-		-- 理论上不会走到这里；真走到这里就把钱退回去
+		-- 理论上不会走到这里；真走到这里就退钱
 		self.currency:AddMoney(player.UserId, cost, "UpgradeDoorRefund")
 		return false
 	end
@@ -530,7 +542,7 @@ function DoorService:TryUpgradeDoor(player)
 	door.hp = newMaxHp
 
 	self:_syncDoorDebugAttrs(door)
-	self:_pushDoorStateToOwner(door)
+	self:_pushDoorStateToAll(door)
 
 	print(string.format("[Door] upgraded. room=%s userId=%d level=%d hp=%d/%d cost=%d",
 		door.roomName, player.UserId, door.level, math.floor(door.hp + 0.5), door.maxHp, cost))
@@ -564,7 +576,7 @@ function DoorService:TryRepairDoor(player)
 	door.nextRepairSyncAt = 0
 
 	self:_syncDoorDebugAttrs(door)
-	self:_pushDoorStateToOwner(door)
+	self:_pushDoorStateToAll(door)
 
 	print(string.format("[Door] repair start. room=%s userId=%d", door.roomName, player.UserId))
 	return true
@@ -591,6 +603,7 @@ function DoorService:DamageDoor(room, damage, source)
 		door.destroyed = true
 		door.isRepairing = false
 		door.repairEndAt = 0
+		door.nextRepairSyncAt = 0
 
 		if door.model then
 			door.model:Destroy()
@@ -605,16 +618,17 @@ function DoorService:DamageDoor(room, damage, source)
 	end
 
 	self:_syncDoorDebugAttrs(door)
-	self:_pushDoorStateToOwner(door)
+	self:_pushDoorStateToAll(door)
 
 	return true
 end
 
 function DoorService:Tick(dt)
 	for _, door in pairs(self.doorsByRoom) do
-		if door.isRepairing and not door.destroyed then
-			local now = time()
+		local now = time()
+		local needSync = false
 
+		if door.isRepairing and not door.destroyed then
 			local healPerSec = door.maxHp * REPAIR_HEAL_PERCENT_PER_SEC
 			door.hp = math.min(door.maxHp, door.hp + healPerSec * dt)
 
@@ -634,9 +648,19 @@ function DoorService:Tick(dt)
 
 			if now >= (door.nextRepairSyncAt or 0) or finished then
 				door.nextRepairSyncAt = now + REPAIR_SYNC_INTERVAL
-				self:_syncDoorDebugAttrs(door)
-				self:_pushDoorStateToOwner(door)
+				needSync = true
 			end
+		elseif not door.destroyed and now < (door.nextRepairAllowedAt or 0) then
+			-- 修门结束后，冷却剩余时间仍然继续同步给客户端
+			if now >= (door.nextRepairSyncAt or 0) then
+				door.nextRepairSyncAt = now + REPAIR_SYNC_INTERVAL
+				needSync = true
+			end
+		end
+
+		if needSync then
+			self:_syncDoorDebugAttrs(door)
+			self:_pushDoorStateToAll(door)
 		end
 	end
 end
@@ -668,6 +692,9 @@ function DoorService:Cleanup()
 			room:SetAttribute("DoorMaxHp", nil)
 			room:SetAttribute("DoorDestroyed", nil)
 			room:SetAttribute("DoorRepairing", nil)
+			room:SetAttribute("DoorRepairCdRemain", nil)
+			room:SetAttribute("DoorRepairRemain", nil)
+			room:SetAttribute("DoorNextUpgradeCost", nil)
 		end
 	end
 

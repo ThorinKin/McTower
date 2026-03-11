@@ -2,11 +2,10 @@
 -- 总注释：本地战斗 FX 仅表现，不参与服务器权威，监听 Battle_FX：
 -- 1. TowerShot 本地转 Yaw 、生成子弹飞行
 -- 2. TowerIncome 本地飘字、产钱表现
--- 3. 客户端监听挂好后，主动向服务端发送 Battle_ClientReady，避免服务端在客户端未接好时把 FX 队列喷爆
+-- 3. 客户端监听挂好后，向服务端发送 Battle_ClientReady
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
-local Debris = game:GetService("Debris")
 local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
@@ -105,76 +104,196 @@ local function rotateYawLocal(yawNode, targetPos)
 	if yawNode == nil or targetPos == nil then
 		return
 	end
-
+	-- 只做水平旋转：保留当前 X/Z，只改 Y
 	if yawNode:IsA("BasePart") then
 		local p = yawNode.Position
-		local lookAt = Vector3.new(targetPos.X, p.Y, targetPos.Z)
-		if (lookAt - p).Magnitude > 0.001 then
-			yawNode.CFrame = CFrame.lookAt(p, lookAt)
+		local flatDir = Vector3.new(targetPos.X - p.X, 0, targetPos.Z - p.Z)
+		if flatDir.Magnitude <= 0.001 then
+			return
 		end
+		-- Roblox 的 LookVector 朝向是 -Z，所以这里用 atan2(-x, -z)
+		local yawDeg = math.deg(math.atan2(-flatDir.X, -flatDir.Z))
+		-- 补偿：如果某个塔的朝向天然差 90 / 180，直接在 Yaw 节点上挂 Attribute
+		local extraYawDeg = tonumber(yawNode:GetAttribute("YawOffset")) or 0
+		local cur = yawNode.Orientation
+		yawNode.Orientation = Vector3.new(cur.X, yawDeg + extraYawDeg, cur.Z)
 		return
 	end
-
 	if yawNode:IsA("Model") then
 		local pivot = yawNode:GetPivot()
 		local p = pivot.Position
-		local lookAt = Vector3.new(targetPos.X, p.Y, targetPos.Z)
-		if (lookAt - p).Magnitude > 0.001 then
-			yawNode:PivotTo(CFrame.lookAt(p, lookAt))
+		local flatDir = Vector3.new(targetPos.X - p.X, 0, targetPos.Z - p.Z)
+		if flatDir.Magnitude <= 0.001 then
+			return
 		end
+		local yawRad = math.atan2(-flatDir.X, -flatDir.Z)
+		-- 保留当前 X/Z，只改 Y
+		local rx, _, rz = pivot:ToOrientation()
+		-- 预留补偿（弧度）
+		local extraYawDeg = tonumber(yawNode:GetAttribute("YawOffset")) or 0
+		local extraYawRad = math.rad(extraYawDeg)
+		yawNode:PivotTo(
+			CFrame.new(p) * CFrame.fromOrientation(rx, yawRad + extraYawRad, rz)
+		)
 	end
 end
 
-local function spawnHitFx(targetPos)
-	local hit = Instance.new("Part")
-	hit.Name = "HitFx"
-	hit.Shape = Enum.PartType.Ball
-	hit.Size = Vector3.new(0.4, 0.4, 0.4)
-	hit.Anchored = true
-	hit.CanCollide = false
-	hit.CanTouch = false
-	hit.CanQuery = false
-	hit.Material = Enum.Material.Neon
-	hit.Color = Color3.fromRGB(255, 220, 80)
-	hit.CFrame = CFrame.new(targetPos)
-	hit.Parent = fxFolder
+local function getInstanceWorldCFrame(inst)
+	if inst == nil then
+		return nil
+	end
 
-	local tween = TweenService:Create(hit, TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		Size = Vector3.new(1.2, 1.2, 1.2),
-		Transparency = 1,
-	})
-	tween:Play()
+	if inst:IsA("BasePart") then
+		return inst.CFrame
+	end
 
-	Debris:AddItem(hit, 0.12)
+	if inst:IsA("Model") then
+		return inst:GetPivot()
+	end
+
+	return nil
 end
 
-local function spawnBulletFx(startPos, targetPos)
-	local bullet = Instance.new("Part")
+local function setInstanceWorldCFrame(inst, worldCFrame)
+	if inst == nil or worldCFrame == nil then
+		return
+	end
+
+	if inst:IsA("BasePart") then
+		inst.CFrame = worldCFrame
+		return
+	end
+
+	if inst:IsA("Model") then
+		local root = getRootPartFromModel(inst)
+		if root and inst.PrimaryPart == nil then
+			pcall(function()
+				inst.PrimaryPart = root
+			end)
+		end
+
+		if inst.PrimaryPart then
+			inst:SetPrimaryPartCFrame(worldCFrame)
+			return
+		end
+
+		inst:PivotTo(worldCFrame)
+	end
+end
+
+local function setFxPhysics(inst)
+	if inst == nil then
+		return
+	end
+
+	local targets = {}
+	if inst:IsA("BasePart") then
+		table.insert(targets, inst)
+	end
+
+	for _, obj in ipairs(inst:GetDescendants()) do
+		if obj:IsA("BasePart") then
+			table.insert(targets, obj)
+		end
+	end
+
+	for _, part in ipairs(targets) do
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = false
+	end
+end
+
+local function getBulletTemplate(towerModel)
+	if not towerModel then
+		return nil
+	end
+
+	local bullet = towerModel:FindFirstChild("Bullet", true)
+	if bullet == nil then
+		return nil
+	end
+
+	if bullet:IsA("BasePart") or bullet:IsA("Model") then
+		return bullet
+	end
+
+	return nil
+end
+
+local function spawnBulletFx(towerModel, targetPos)
+	if towerModel == nil or typeof(targetPos) ~= "Vector3" then
+		return
+	end
+	local root = getRootPartFromModel(towerModel)
+	if not root then
+		return
+	end
+	local bulletTemplate = getBulletTemplate(towerModel)
+	if not bulletTemplate then
+		warn("[BattleFx] Bullet template not found in tower:", towerModel.Name)
+		return
+	end
+	local muzzleNode = towerModel:FindFirstChild("Muzzle", true)
+	-- 起点：优先枪口；没有枪口就退回 Bullet 模板当前位置；再不行就 root
+	local startPos = getWorldPositionFromNode(muzzleNode, root)
+
+	local templateCFrame = getInstanceWorldCFrame(bulletTemplate)
+	if templateCFrame == nil then
+		templateCFrame = CFrame.lookAt(startPos, targetPos)
+	end
+	-- 保留 Bullet 模板当前朝向，只把位置对齐到枪口
+	local startCFrame = CFrame.lookAt(
+		startPos,
+		startPos + templateCFrame.LookVector,
+		templateCFrame.UpVector
+	)
+	local bullet = bulletTemplate:Clone()
 	bullet.Name = "BulletFx"
-	bullet.Shape = Enum.PartType.Ball
-	bullet.Size = Vector3.new(0.25, 0.25, 0.25)
-	bullet.Anchored = true
-	bullet.CanCollide = false
-	bullet.CanTouch = false
-	bullet.CanQuery = false
-	bullet.Material = Enum.Material.Neon
-	bullet.Color = Color3.fromRGB(255, 220, 80)
-	bullet.CFrame = CFrame.new(startPos)
+	setFxPhysics(bullet)
 	bullet.Parent = fxFolder
-
+	setInstanceWorldCFrame(bullet, startCFrame)
+	-- 速度支持直接在 Bullet 上配 Attribute：BulletSpeed
+	local bulletSpeed = tonumber(bulletTemplate:GetAttribute("BulletSpeed")) or 140
+	if bulletSpeed <= 0 then
+		bulletSpeed = 140
+	end
 	local distance = (targetPos - startPos).Magnitude
-	local flyTime = math.clamp(distance / 140, 0.04, 0.20)
+	local flyTime = math.clamp(distance / bulletSpeed, 0.03, 1.5)
 
-	local tween = TweenService:Create(bullet, TweenInfo.new(flyTime, Enum.EasingStyle.Linear), {
-		Position = targetPos,
-	})
-	tween:Play()
+	task.spawn(function()
+		local beginAt = os.clock()
 
-	tween.Completed:Connect(function()
-		spawnHitFx(targetPos)
+		while bullet.Parent do
+			local alpha = (os.clock() - beginAt) / flyTime
+			if alpha >= 1 then
+				break
+			end
+
+			local pos = startPos:Lerp(targetPos, alpha)
+
+			-- 飞行过程中保持 Bullet 自己的朝向
+			local cf = CFrame.lookAt(
+				pos,
+				pos + startCFrame.LookVector,
+				startCFrame.UpVector
+			)
+
+			setInstanceWorldCFrame(bullet, cf)
+			RunService.RenderStepped:Wait()
+		end
+
+		if bullet and bullet.Parent then
+			local endCFrame = CFrame.lookAt(
+				targetPos,
+				targetPos + startCFrame.LookVector,
+				startCFrame.UpVector
+			)
+			setInstanceWorldCFrame(bullet, endCFrame)
+			bullet:Destroy()
+		end
 	end)
-
-	Debris:AddItem(bullet, flyTime + 0.15)
 end
 
 RE_FX.OnClientEvent:Connect(function(fxType, payload)
@@ -184,20 +303,14 @@ RE_FX.OnClientEvent:Connect(function(fxType, payload)
 	if typeof(payload) ~= "table" then
 		return
 	end
-
 	if fxType == "TowerShot" then
 		local towerModel = resolveTowerModel(payload.tower)
 		local targetPos = payload.targetPosition
-
 		if towerModel and typeof(targetPos) == "Vector3" then
-			local root = getRootPartFromModel(towerModel)
 			local yawNode = towerModel:FindFirstChild("Yaw", true)
-			local muzzleNode = towerModel:FindFirstChild("Muzzle", true)
-
+			-- 先本地转炮塔 Yaw，再从当前塔模型里的 Bullet 模板克隆一发
 			rotateYawLocal(yawNode, targetPos)
-
-			local startPos = getWorldPositionFromNode(muzzleNode, root)
-			spawnBulletFx(startPos, targetPos)
+			spawnBulletFx(towerModel, targetPos)
 		end
 
 		return

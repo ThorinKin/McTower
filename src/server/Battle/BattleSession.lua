@@ -118,14 +118,14 @@ function BattleSession:Start()
 	local CurrencyService  = require(script.Parent.Services:WaitForChild("CurrencyService"))
 	local DoorService      = require(script.Parent.Services:WaitForChild("DoorService"))
 	local TowerService     = require(script.Parent.Services:WaitForChild("TowerService"))
-	-- local BossService      = require(script.Parent.Services:WaitForChild("BossService"))
+	local BossService      = require(script.Parent.Services:WaitForChild("BossService"))
 	-- local ResultService    = require(script.Parent.Services:WaitForChild("ResultService"))
 
 	self:AddService("Territory", TerritoryService.new(self))
 	self:AddService("Currency",  CurrencyService.new(self))
 	self:AddService("Door",      DoorService.new(self))
+	self:AddService("Boss",      BossService.new(self))
 	self:AddService("Tower",     TowerService.new(self))
-	-- self:AddService("Boss",      BossService.new(self))
 	-- self:AddService("Result",    ResultService.new(self))
 
 	-- Prepare 阶段：让服务做一次初始化
@@ -201,15 +201,38 @@ function BattleSession:End(reason)
 	if self.ended then return end
 	self.ended = true
 	self.state = BattleSession.State.End
-
 	print("[BattleSession] End:", reason)
 
-	-------------------------------------------------------预留 结算发奖，Teleport 回公开服↓
-	-- ResultService.Settle(...)
-	-- TeleportService:Teleport(game.PlaceId, player)
-	-------------------------------------------------------预留 结算发奖，Teleport 回公开服↑
+	-------------------------------------------------------预留 结算发奖，5 秒后 Teleport 回公开服↓
+	task.delay(5, function()
+		local TeleportService = game:GetService("TeleportService")
+		local playerList = Players:GetPlayers()
 
-	self:Cleanup()
+		if #playerList == 0 then
+			self:Cleanup()
+			return
+		end
+
+		local okBatch, errBatch = pcall(function()
+			TeleportService:TeleportAsync(game.PlaceId, playerList)
+		end)
+
+		if not okBatch then
+			warn("[BattleSession] TeleportAsync failed:", errBatch)
+
+			for _, player in ipairs(playerList) do
+				pcall(function()
+					TeleportService:Teleport(game.PlaceId, player)
+				end)
+			end
+		end
+
+		-- 稍等一下，给 teleport 留一点窗口
+		task.delay(1.0, function()
+			self:Cleanup()
+		end)
+	end)
+	-------------------------------------------------------预留 结算发奖，5 秒后 Teleport 回公开服↑
 end
 
 function BattleSession:Cleanup()
