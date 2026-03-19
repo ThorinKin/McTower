@@ -22,9 +22,6 @@ BossService.__index = BossService
 ----------------------------------------------------------------
 -- 常量
 local COUNTDOWN_SEC = 30
-local END_RETURN_DELAY_SEC = 5
-local PLAYER_DEATH_RETURN_DELAY_SEC = 5
-
 local MOVE_REISSUE_SEC = 0.35
 local WAYPOINT_REACHED_DISTANCE = 5
 local ATTACK_REACHED_DISTANCE = 6
@@ -32,7 +29,8 @@ local REGEN_REACHED_DISTANCE = 6
 
 local BOSS_STATE_SYNC_INTERVAL = 0.25
 local TIP_ATTACK_DURATION_SEC = 10
-local REGEN_PAUSE_SEC = 1.0
+local REGEN_PAUSE_SEC = 3.0
+local REGEN_HEAL_PERCENT_PER_SEC = 0.05
 
 local LOCK_HP_PERCENT = 0.20
 ----------------------------------------------------------------
@@ -671,10 +669,8 @@ function BossService:_loadBossAnimationTracks(model, humanoid)
 		animator = Instance.new("Animator")
 		animator.Parent = humanoid
 	end
-
 	local walkTrack = nil
 	local attackTrack = nil
-
 	local animSaves = model:FindFirstChild("AnimSaves")
 	if animSaves then
 		local walkAnim = animSaves:FindFirstChild("walk")
@@ -686,21 +682,26 @@ function BossService:_loadBossAnimationTracks(model, humanoid)
 			end)
 			if ok and track then
 				track.Looped = true
+				pcall(function()
+					track.Priority = Enum.AnimationPriority.Movement
+				end)
 				walkTrack = track
 			end
 		end
-
 		if attackAnim and attackAnim:IsA("Animation") then
 			local ok, track = pcall(function()
 				return animator:LoadAnimation(attackAnim)
 			end)
 			if ok and track then
-				track.Looped = true
+				-- 攻击动画不循环；每次真正出手时手动播一次
+				track.Looped = false
+				pcall(function()
+					track.Priority = Enum.AnimationPriority.Action
+				end)
 				attackTrack = track
 			end
 		end
 	end
-
 	return animator, walkTrack, attackTrack
 end
 
@@ -794,12 +795,19 @@ end
 
 function BossService:_playAttack()
 	if not self.boss then return end
-
+	-- 攻击前先停掉走路动画
 	if self.boss.walkTrack and self.boss.walkTrack.IsPlaying then
 		self.boss.walkTrack:Stop(0.1)
 	end
-	if self.boss.attackTrack and not self.boss.attackTrack.IsPlaying then
-		self.boss.attackTrack:Play(0.1)
+	-- 每次真正攻击时，从头播一次 attack
+	if self.boss.attackTrack then
+		if self.boss.attackTrack.IsPlaying then
+			self.boss.attackTrack:Stop(0.05)
+		end
+		pcall(function()
+			self.boss.attackTrack.TimePosition = 0
+		end)
+		self.boss.attackTrack:Play(0.05)
 	end
 end
 
@@ -1012,11 +1020,8 @@ function BossService:_beginRetreatToRegen(reason)
 
 	local regenPoint = self:_getNearestRegenPoint(self.boss.root.Position)
 	if not regenPoint then
-		warn("[Boss] No regeneration point found, fallback begin next wave directly")
-		self.state = "Regenerating"
-		self.regenResumeAt = time() + REGEN_PAUSE_SEC
-		self:_applyBossLevelForWave(math.min(self.wave + 1, self.maxWaves))
-		self:_pushBossStateToAll()
+		warn("[Boss] No regeneration point found, fallback enter regenerating directly")
+		self:_enterRegenerating()
 		return
 	end
 
@@ -1042,15 +1047,20 @@ function BossService:_enterRegenerating()
 	self:_stopWalk()
 	self:_stopAttack()
 
-	-- 到点直接回满，再短暂停留后进入下一波
-	self.boss.hp = self.boss.maxHp
+	-- 进入回血阶段
+	-- regenResumeAt = 0 表示还没回满，尚未进入停顿计时
 	self.boss.lockHp = nil
-	self:_syncBossHumanoidHp()
+	self.regenResumeAt = 0
 
-	self.regenResumeAt = time() + REGEN_PAUSE_SEC
+	self:_syncBossHumanoidHp()
 	self:_pushBossStateToAll()
 
-	print(string.format("[Boss] regenerating. wave=%d nextWave=%d", self.wave, math.min(self.wave + 1, self.maxWaves)))
+	print(string.format(
+		"[Boss] regenerating start. wave=%d hp=%d/%d",
+		self.wave,
+		math.floor((self.boss.hp or 0) + 0.5),
+		math.floor((self.boss.maxHp or 0) + 0.5)
+	))
 end
 
 ------------------------------------------------------------ 伤害 / 攻击 / 死亡
@@ -1075,15 +1085,12 @@ function BossService:ApplyDamage(amount, sourceInfo)
 	if self.state == "Countdown" or self.state == "Dead" then
 		return false
 	end
-
 	local damage = tonumber(amount) or 0
 	if damage <= 0 then
 		return false
 	end
-
 	local oldHp = self.boss.hp
 	local newHp = oldHp - damage
-
 	-- 非最后一波：20% 锁血，不允许被打死
 	if not self.isFinalWave then
 		local lockHp = math.max(1, math.floor(self.boss.maxHp * LOCK_HP_PERCENT + 0.5))
@@ -1095,27 +1102,28 @@ function BossService:ApplyDamage(amount, sourceInfo)
 			newHp = lockHp
 		end
 	end
-
-	self.boss.hp = math.max(0, newHp)
+	newHp = math.max(0, newHp)
+	local actualDamage = math.max(0, oldHp - newHp)
+	if actualDamage <= 0 then
+		return false
+	end
+	self.boss.hp = newHp
 	self:_syncBossHumanoidHp()
-
 	-- 非最后一波且刚触发锁血：立刻撤退
 	if not self.isFinalWave and self.boss.lockHp ~= nil and self.state ~= "RetreatingToRegen" and self.state ~= "Regenerating" then
 		self:_pushBossStateToAll()
 		self:_beginRetreatToRegen("LowHpLock")
-		return true
+		return actualDamage
 	end
-
 	-- 最后一波允许真正死亡
 	if self.boss.hp <= 0 then
 		self.boss.hp = 0
 		self:_syncBossHumanoidHp()
 		self:_onBossKilled(sourceInfo)
-		return true
+		return actualDamage
 	end
-
 	self:_maybePushBossState()
-	return true
+	return actualDamage
 end
 
 function BossService:_onBossKilled(_sourceInfo)
@@ -1147,17 +1155,23 @@ function BossService:_handleDoorDestroyed(door)
 	if not door then
 		return
 	end
-
 	local ownerUserId = door.ownerUserId
 	if ownerUserId ~= nil and self.deathHandledByUserId[ownerUserId] ~= true then
 		self.deathHandledByUserId[ownerUserId] = true
 
 		self:_setTip("tip1", string.format("%s HAS DIED!", self:_getPlayerLabel(ownerUserId)), 2.5)
-		self.pendingReturnAtByUserId[ownerUserId] = time() + PLAYER_DEATH_RETURN_DELAY_SEC
+		self.pendingReturnAtByUserId[ownerUserId] = nil
 
 		if self.tower and self.tower.DestroyTowersOfUserId then
 			pcall(function()
 				self.tower:DestroyTowersOfUserId(ownerUserId, "DoorDestroyed")
+			end)
+		end
+		-- 门被拆，单个玩家失败结算 / 发伤害 gold / 打开 lose 面板
+		local resultSvc = self.session and self.session.services and self.session.services["Result"]
+		if resultSvc and resultSvc.OnPlayerDoorDestroyed then
+			pcall(function()
+				resultSvc:OnPlayerDoorDestroyed(ownerUserId, "DoorDestroyed")
 			end)
 		end
 	end
@@ -1201,26 +1215,24 @@ function BossService:_tickAttackTarget()
 		self:_handleDoorDestroyed(door)
 		return
 	end
-
+	-- 攻击状态下保持面朝目标，并停掉走路
 	self:_alignBossToCFrame(targetPart.CFrame)
-	self:_playAttack()
-
+	self:_stopWalk()
 	-- 非最后一波：攻击满 WaveTime 秒就撤退
 	if not self.isFinalWave and time() >= self.currentAttackEndAt then
 		self:_beginRetreatToRegen("WaveTimeReached")
 		return
 	end
-
 	local now = time()
 	if now < self.nextBossAttackAt then
 		return
 	end
-
 	local damage = self:_getBossAtkAtLevel(self.boss.level)
 	local atkInterval = self:_getBossAtkIntervalAtLevel(self.boss.level)
+	-- 真正出手的一刻：播一次攻击动画，并结算一次伤害
+	self:_playAttack()
 
 	self.nextBossAttackAt = now + atkInterval
-
 	self.door:DamageDoor(door.room, damage, "Boss:" .. tostring(self.bossId))
 	self:_maybePushBossState()
 
@@ -1353,7 +1365,40 @@ function BossService:Tick(_dt)
 	end
 
 	if self.state == "Regenerating" then
-		if time() >= self.regenResumeAt then
+		-- 每秒回复 5% 最大生命值；回满后再等 REGEN_PAUSE_SEC
+		if self.boss.hp < self.boss.maxHp then
+			local healPerSec = self.boss.maxHp * REGEN_HEAL_PERCENT_PER_SEC
+			local oldHp = self.boss.hp
+
+			self.boss.hp = math.min(self.boss.maxHp, self.boss.hp + healPerSec * _dt)
+
+			if self.boss.hp ~= oldHp then
+				self:_syncBossHumanoidHp()
+			end
+
+			if self.boss.hp >= self.boss.maxHp then
+				self.boss.hp = self.boss.maxHp
+				self:_syncBossHumanoidHp()
+
+				if (self.regenResumeAt or 0) <= 0 then
+					self.regenResumeAt = time() + REGEN_PAUSE_SEC
+					print(string.format(
+						"[Boss] regenerating full. wave=%d nextWave=%d",
+						self.wave,
+						math.min(self.wave + 1, self.maxWaves)
+					))
+					self:_pushBossStateToAll()
+				end
+			end
+		else
+			-- 极端兜底：如果已经满血但还没开始停顿计时，这里补上
+			if (self.regenResumeAt or 0) <= 0 then
+				self.regenResumeAt = time() + REGEN_PAUSE_SEC
+				self:_pushBossStateToAll()
+			end
+		end
+
+		if (self.regenResumeAt or 0) > 0 and time() >= self.regenResumeAt then
 			if self.wave >= self.maxWaves then
 				-- 理论上不会走这里；最后一波不会撤退
 				self.isFinalWave = true

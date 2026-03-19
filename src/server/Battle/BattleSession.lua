@@ -113,20 +113,20 @@ function BattleSession:Start()
 	print(string.format("[BattleSession] Start Prepare  sessionId=%s  players=%d",
 		tostring(self.ctx.sessionId), #Players:GetPlayers()))
 
-	-------------------------------------------------------预留服务：Territory/Currency/Door/Tower/Boss/Result ↓
+	--服务：Territory/Currency/Result/Door/Tower/Boss ↓
 	local TerritoryService = require(script.Parent.Services:WaitForChild("TerritoryService"))
 	local CurrencyService  = require(script.Parent.Services:WaitForChild("CurrencyService"))
+	local ResultService    = require(script.Parent.Services:WaitForChild("ResultService"))
 	local DoorService      = require(script.Parent.Services:WaitForChild("DoorService"))
 	local TowerService     = require(script.Parent.Services:WaitForChild("TowerService"))
 	local BossService      = require(script.Parent.Services:WaitForChild("BossService"))
-	-- local ResultService    = require(script.Parent.Services:WaitForChild("ResultService"))
 
 	self:AddService("Territory", TerritoryService.new(self))
 	self:AddService("Currency",  CurrencyService.new(self))
+	self:AddService("Result",    ResultService.new(self))
 	self:AddService("Door",      DoorService.new(self))
 	self:AddService("Boss",      BossService.new(self))
 	self:AddService("Tower",     TowerService.new(self))
-	-- self:AddService("Result",    ResultService.new(self))
 
 	-- Prepare 阶段：让服务做一次初始化
 	for _, name in ipairs(self.serviceOrder) do
@@ -140,8 +140,7 @@ function BattleSession:Start()
 			end
 		end
 	end
-	-------------------------------------------------------预留服务：Territory/Currency/Door/Tower/Boss/Result ↑
-
+	--服务：Territory/Currency/Result/Door/Tower/Boss ↑
 	-- 准备完成后进入战斗
 	self.state = BattleSession.State.InBattle
 	print(string.format("[BattleSession] Enter InBattle  sessionId=%s", tostring(self.ctx.sessionId)))
@@ -202,37 +201,45 @@ function BattleSession:End(reason)
 	self.ended = true
 	self.state = BattleSession.State.End
 	print("[BattleSession] End:", reason)
-
-	-------------------------------------------------------预留 结算发奖，5 秒后 Teleport 回公开服↓
-	task.delay(5, function()
-		local TeleportService = game:GetService("TeleportService")
-		local playerList = Players:GetPlayers()
-
-		if #playerList == 0 then
-			self:Cleanup()
-			return
-		end
-
-		local okBatch, errBatch = pcall(function()
-			TeleportService:TeleportAsync(game.PlaceId, playerList)
+	-- 结算发奖 / 打开结算 UI / 自动回大厅
+	local resultSvc = self.services["Result"]
+	if resultSvc and resultSvc.HandleSessionEnd then
+		local ok, err = pcall(function()
+			resultSvc:HandleSessionEnd(reason)
 		end)
+		if not ok then
+			warn("[BattleSession] ResultService HandleSessionEnd failed:", err)
+		end
+	else
+		-- 兜底：没有 ResultService 就 5 秒后直接回大厅
+		task.delay(5, function()
+			local TeleportService = game:GetService("TeleportService")
+			local playerList = Players:GetPlayers()
 
-		if not okBatch then
-			warn("[BattleSession] TeleportAsync failed:", errBatch)
-
-			for _, player in ipairs(playerList) do
-				pcall(function()
-					TeleportService:Teleport(game.PlaceId, player)
-				end)
+			if #playerList == 0 then
+				self:Cleanup()
+				return
 			end
-		end
 
-		-- 稍等一下，给 teleport 留一点窗口
-		task.delay(1.0, function()
-			self:Cleanup()
+			local okBatch, errBatch = pcall(function()
+				TeleportService:TeleportAsync(game.PlaceId, playerList)
+			end)
+
+			if not okBatch then
+				warn("[BattleSession] TeleportAsync failed:", errBatch)
+
+				for _, player in ipairs(playerList) do
+					pcall(function()
+						TeleportService:Teleport(game.PlaceId, player)
+					end)
+				end
+			end
 		end)
+	end
+	-- 给结算 UI / 自动回大厅留窗口，超时后兜底清理
+	task.delay(15, function()
+		self:Cleanup()
 	end)
-	-------------------------------------------------------预留 结算发奖，5 秒后 Teleport 回公开服↑
 end
 
 function BattleSession:Cleanup()

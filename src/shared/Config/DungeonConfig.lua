@@ -4,7 +4,7 @@
 local DungeonConfig = {
 	Level_1 = {
 		Id = "Level_1",
-		Name = "Level_1",
+		Name = "Forest",
 		DoorId = "door_1",
 		BossId = "boss_1",
 
@@ -21,7 +21,8 @@ local DungeonConfig = {
 		},
 
 		StartMoney = {
-			Easy    = 30000, -- 测试
+			-- Easy    = 30000, -- 测试
+			Easy    = 300, 
 			Normal  = 700,
 			Hard    = 1500,
 			Endless = 1500,

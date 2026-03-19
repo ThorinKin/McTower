@@ -37,11 +37,11 @@ local DEFAULT_UNLOCKED = {
 
 -- 默认装备 前四格可用，第五格默认锁
 local DEFAULT_EQUIPPED = {
-	"turret_1",
-	"turret_6",
-	nil,
-	nil,
-	nil,
+	["1"] = "turret_1",
+	["2"] = "turret_6",
+	["3"] = false,
+	["4"] = false,
+	["5"] = false,
 }
 
 -- 默认状态
@@ -64,27 +64,41 @@ local function cloneUnlockedMap(src)
 	return t
 end
 
--- 工具：拷贝 equipped（长度固定 5）
+-- 工具：拷贝 equipped（固定 5 个槽位）
 local function cloneEquippedArr(src)
-	local arr = { nil, nil, nil, nil, nil }
+	local slots = {
+		["1"] = false,
+		["2"] = false,
+		["3"] = false,
+		["4"] = false,
+		["5"] = false,
+	}
+
 	if typeof(src) == "table" then
 		for i = 1, 5 do
-			local v = src[i]
+			local key = tostring(i)
+			local v = src[key]
+			-- 兼容旧存档 / 旧缓存：以前是数字下标数组
+			if v == nil then
+				v = src[i]
+			end
+
 			if typeof(v) == "string" then
-				arr[i] = v
+				slots[key] = v
+			else
+				slots[key] = false
 			end
 		end
 	end
-	return arr
+
+	return slots
 end
 
 -- shape 修正：过滤非法塔、去重、保证默认解锁、默认装备 仅在全空时补
 local function ensureShape(data)
 	local t = (typeof(data) == "table") and table.clone(data) or {}
-
 	-- slot5Unlocked
 	t.slot5Unlocked = (t.slot5Unlocked == true)
-
 	-- unlocked
 	local unlocked = cloneUnlockedMap(t.unlocked)
 	-- 过滤非法塔
@@ -100,48 +114,55 @@ local function ensureShape(data)
 		end
 	end
 	t.unlocked = unlocked
-
 	-- equipped
 	local equipped = cloneEquippedArr(t.equipped)
-
 	-- slot5 未解锁：强制清空第5格
 	if not t.slot5Unlocked then
-		equipped[5] = nil
+		equipped["5"] = false
 	end
-
 	-- 过滤非法/未解锁，并去重：后面的冲突直接清空
 	local seen = {}
 	local maxSlot = t.slot5Unlocked and 5 or 4
+
 	for i = 1, 5 do
-		local id = equipped[i]
+		local key = tostring(i)
+		local id = equipped[key]
+
 		if i > maxSlot then
-			equipped[i] = nil
-		elseif id ~= nil then
+			equipped[key] = false
+		elseif typeof(id) == "string" then
 			if not isValidTowerId(id) then
-				equipped[i] = nil
+				equipped[key] = false
 			elseif unlocked[id] ~= true then
-				equipped[i] = nil
+				equipped[key] = false
 			elseif seen[id] then
-				equipped[i] = nil
+				equipped[key] = false
 			else
 				seen[id] = true
 			end
+		else
+			equipped[key] = false
 		end
 	end
-
 	-- 如果 1~maxSlot 全空：补默认装备（不覆盖玩家已有配置）
 	local allEmpty = true
 	for i = 1, maxSlot do
-		if equipped[i] ~= nil then
+		local id = equipped[tostring(i)]
+		if typeof(id) == "string" then
 			allEmpty = false
 			break
 		end
 	end
+
 	if allEmpty then
 		-- 默认装备 turret_1 / turret_6
 		local a, b = "turret_1", "turret_6"
-		if unlocked[a] then equipped[1] = a end
-		if unlocked[b] then equipped[2] = b end
+		if unlocked[a] == true then
+			equipped["1"] = a
+		end
+		if unlocked[b] == true then
+			equipped["2"] = b
+		end
 	end
 
 	t.equipped = equipped
@@ -151,7 +172,6 @@ end
 local function getStore(player)
 	return DataStore2(StoreRegistry.Tower, player)
 end
-
 -- 变更事件：给 UI / 其他服务用
 local changedBE = Instance.new("BindableEvent")
 
@@ -247,12 +267,14 @@ function TowerModule.getEquipped(player)
 
 	local maxSlot = state.slot5Unlocked and 5 or 4
 	local arr = {}
+
 	for i = 1, maxSlot do
-		local id = state.equipped[i]
+		local id = state.equipped[tostring(i)]
 		if typeof(id) == "string" then
 			table.insert(arr, id)
 		end
 	end
+
 	return arr
 end
 
@@ -262,6 +284,7 @@ function TowerModule.equip(player, slotIndex, towerId, reason)
 	assert(isValidTowerId(towerId), ("[TowerModule] 非法 towerId：%s"):format(tostring(towerId)))
 
 	local resultOk = false
+
 	mutate(player, "equip slot=" .. tostring(slotIndex) .. " " .. (reason or ""), function(s)
 		local maxSlot = s.slot5Unlocked and 5 or 4
 		local idx = math.floor(slotIndex)
@@ -271,15 +294,17 @@ function TowerModule.equip(player, slotIndex, towerId, reason)
 		if s.unlocked[towerId] ~= true then
 			return
 		end
-
+		-- equipped 兜底转成标准槽位字典
+		s.equipped = cloneEquippedArr(s.equipped)
 		-- 去重：把其它格里同塔清掉
 		for i = 1, maxSlot do
-			if i ~= idx and s.equipped[i] == towerId then
-				s.equipped[i] = nil
+			local key = tostring(i)
+			if i ~= idx and s.equipped[key] == towerId then
+				s.equipped[key] = false
 			end
 		end
 
-		s.equipped[idx] = towerId
+		s.equipped[tostring(idx)] = towerId
 		resultOk = true
 	end)
 
@@ -291,13 +316,16 @@ function TowerModule.unequip(player, slotIndex, reason)
 	assert(type(slotIndex) == "number", "[TowerModule] slotIndex 必须为数字")
 
 	local resultOk = false
+
 	mutate(player, "unequip slot=" .. tostring(slotIndex) .. " " .. (reason or ""), function(s)
 		local maxSlot = s.slot5Unlocked and 5 or 4
 		local idx = math.floor(slotIndex)
 		if idx < 1 or idx > maxSlot then
 			return
 		end
-		s.equipped[idx] = nil
+		-- equipped 兜底转成标准槽位字典
+		s.equipped = cloneEquippedArr(s.equipped)
+		s.equipped[tostring(idx)] = false
 		resultOk = true
 	end)
 

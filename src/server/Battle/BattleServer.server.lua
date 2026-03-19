@@ -11,6 +11,7 @@ local BattleSession = require(script.Parent:WaitForChild("BattleSession"))
 
 -- 公开服不跑战斗逻辑
 if not MatchDefs.IsBattlePrivateServer() then
+	print("[BattleServer] 触发公开服不跑战斗逻辑")
 	return
 end
 

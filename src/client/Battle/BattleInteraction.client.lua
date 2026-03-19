@@ -19,12 +19,23 @@ local DoorConfig = require(ReplicatedStorage.Shared.Config.DoorConfig)
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
-local function waitRemote(remotes, remoteName, timeoutSec)
+local function waitRemote(remotes, remoteName, _timeoutSec)
 	local re = remotes:FindFirstChild(remoteName)
 	if re and re:IsA("RemoteEvent") then
 		return re
 	end
-	return remotes:WaitForChild(remoteName, timeoutSec or 10)
+
+	while true do
+		local child = remotes.ChildAdded:Wait()
+		if child.Name == remoteName and child:IsA("RemoteEvent") then
+			return child
+		end
+
+		re = remotes:FindFirstChild(remoteName)
+		if re and re:IsA("RemoteEvent") then
+			return re
+		end
+	end
 end
 
 local RE_TowerRequest = waitRemote(Remotes, "Battle_TowerRequest", 10)
@@ -175,6 +186,17 @@ local function getSelectedState()
 	}
 end
 
+-- 工具：填imagelabel
+local function setIconImage(imageLabel, image)
+	if not imageLabel or not imageLabel:IsA("ImageLabel") then
+		return
+	end
+
+	local imageId = tostring(image or "")
+	imageLabel.Image = imageId
+	imageLabel.Visible = imageId ~= ""
+end
+
 local function getHudRefs()
 	local hud = PlayerGui:FindFirstChild("HUD")
 	if not hud then
@@ -205,6 +227,9 @@ local function getHudRefs()
 
 	local upgradeWeapon = upgradeMain and upgradeMain:FindFirstChild("weapon")
 	local upgradeWeaponFrame = upgradeWeapon and upgradeWeapon:FindFirstChild("Frame")
+	local upgradeWeaponPhoto = upgradeWeaponFrame and upgradeWeaponFrame:FindFirstChild("photo")
+	local upgradeWeaponIcon = upgradeWeaponPhoto and upgradeWeaponPhoto:FindFirstChild("ImageLabel")
+
 	local upgradeWeaponName = upgradeWeaponFrame and upgradeWeaponFrame:FindFirstChild("name")
 	local upgradeWeaponNameText = upgradeWeaponName and upgradeWeaponName:FindFirstChild("TextLabel")
 
@@ -236,6 +261,7 @@ local function getHudRefs()
 		upgrade = upgrade,
 		upgradeNameText = upgradeNameText,
 		upgradeCostText = upgradeCostText,
+		upgradeWeaponIcon = upgradeWeaponIcon,
 		upgradeWeaponNameText = upgradeWeaponNameText,
 		levelText1 = levelText1,
 		levelText2 = levelText2,
@@ -583,17 +609,82 @@ local function renderBuildList(refs)
 			local frame = item:FindFirstChild("Frame")
 			local nameNode = frame and frame:FindFirstChild("name")
 			local nameText = nameNode and nameNode:FindFirstChild("TextLabel")
+			local photo = frame and frame:FindFirstChild("photo")
+			local iconImage = photo and photo:FindFirstChild("ImageLabel")
 			local greenBtn = frame and frame:FindFirstChild("GreenTextButton")
 			local redBtn = frame and frame:FindFirstChild("RedTextButton")
+			local greenBtnLevel = greenBtn and greenBtn:FindFirstChild("level")
+			local redBtnLevel = redBtn and redBtn:FindFirstChild("level")
+
+			-- weapon.Frame.ImageLabel / weapon.Frame.TextLabel
+			local typeImage = frame and frame:FindFirstChild("ImageLabel")
+			local statText = frame and frame:FindFirstChild("TextLabel")
 
 			local displayName = tostring(cfg.Name or towerId)
 			local cost = getPlaceCost(towerId)
 			local canAfford = runMoney >= cost
+			local costText = formatMoneyText(cost)
 
+			-- 名字只显示塔名，价格改到按钮里的 level 文本
 			if nameText and nameText:IsA("TextLabel") then
-				nameText.Text = string.format("%s  %s", displayName, formatMoneyText(cost))
+				nameText.Text = displayName
 			else
 				warn("[BattleInteraction] nameText missing for tower:", towerId)
+			end
+
+			if greenBtnLevel and greenBtnLevel:IsA("TextLabel") then
+				greenBtnLevel.Text = costText
+			end
+			if redBtnLevel and redBtnLevel:IsA("TextLabel") then
+				redBtnLevel.Text = costText
+			end
+
+			setIconImage(iconImage, cfg.Icon)
+
+			-- 类型图标 + 简单数值文案
+			if cfg.Type == "Attack" then
+				if typeImage and typeImage:IsA("ImageLabel") then
+					typeImage.Image = "rbxassetid://126617971826399"
+					typeImage.Visible = true
+				end
+
+				if statText and statText:IsA("TextLabel") then
+					local damageLv1 = tonumber(getStatAtLevel(towerId, "Damage", 1)) or 0
+					local intervalLv1 = tonumber(getStatAtLevel(towerId, "Interval", 1)) or 0
+					local dps = 0
+					if intervalLv1 > 0 then
+						dps = damageLv1 / intervalLv1
+					end
+
+					if math.abs(dps - math.floor(dps + 0.5)) < 0.001 then
+						statText.Text = string.format("%d/s", math.floor(dps + 0.5))
+					else
+						statText.Text = string.format("%.1f/s", dps)
+					end
+				end
+
+			elseif cfg.Type == "Economy" then
+				if typeImage and typeImage:IsA("ImageLabel") then
+					typeImage.Image = "rbxassetid://119378866287880"
+					typeImage.Visible = true
+				end
+
+				if statText and statText:IsA("TextLabel") then
+					local moneyPerSecLv1 = tonumber(getStatAtLevel(towerId, "MoneyPerSec", 1)) or 0
+					if math.abs(moneyPerSecLv1 - math.floor(moneyPerSecLv1 + 0.5)) < 0.001 then
+						statText.Text = string.format("%d/s", math.floor(moneyPerSecLv1 + 0.5))
+					else
+						statText.Text = string.format("%.1f/s", moneyPerSecLv1)
+					end
+				end
+			else
+				if typeImage and typeImage:IsA("ImageLabel") then
+					typeImage.Image = ""
+					typeImage.Visible = false
+				end
+				if statText and statText:IsA("TextLabel") then
+					statText.Text = ""
+				end
 			end
 
 			if greenBtn and greenBtn:IsA("TextButton") then
@@ -635,6 +726,7 @@ local function renderBuildList(refs)
 			warn("[BattleInteraction] missing TowerConfig for towerId:", tostring(towerId))
 		end
 	end
+
 	-- 首次建完顺手再刷一遍可购买状态，避免边界时序问题
 	refreshBuildAffordState(refs)
 end
@@ -665,6 +757,8 @@ local function renderTowerUpgradePanel(refs, state)
 	if refs.upgradeWeaponNameText and refs.upgradeWeaponNameText:IsA("TextLabel") then
 		refs.upgradeWeaponNameText.Text = displayName
 	end
+
+	setIconImage(refs.upgradeWeaponIcon, cfg.Icon)
 
 	if refs.upgradeCostText and refs.upgradeCostText:IsA("TextLabel") then
 		if canUpgrade and upgradeCost ~= nil then
@@ -752,6 +846,8 @@ local function renderDoorUpgradePanel(refs, state)
 	if refs.upgradeWeaponNameText and refs.upgradeWeaponNameText:IsA("TextLabel") then
 		refs.upgradeWeaponNameText.Text = displayName
 	end
+
+	setIconImage(refs.upgradeWeaponIcon, cfg.Icon)
 
 	if refs.upgradeCostText and refs.upgradeCostText:IsA("TextLabel") then
 		if canUpgrade and upgradeCost ~= nil then

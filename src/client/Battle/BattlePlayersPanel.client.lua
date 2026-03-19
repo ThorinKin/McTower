@@ -13,12 +13,23 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
-local function waitRemote(remotes, remoteName, timeoutSec)
+local function waitRemote(remotes, remoteName, _timeoutSec)
 	local re = remotes:FindFirstChild(remoteName)
 	if re and re:IsA("RemoteEvent") then
 		return re
 	end
-	return remotes:WaitForChild(remoteName, timeoutSec or 10)
+
+	while true do
+		local child = remotes.ChildAdded:Wait()
+		if child.Name == remoteName and child:IsA("RemoteEvent") then
+			return child
+		end
+
+		re = remotes:FindFirstChild(remoteName)
+		if re and re:IsA("RemoteEvent") then
+			return re
+		end
+	end
 end
 
 local RE_DoorState = waitRemote(Remotes, "Battle_DoorState", 10)
@@ -29,8 +40,13 @@ end
 
 -- userId -> payload
 local doorStateByUserId = {}
-
 local refreshQueued = false
+-- 玩家头像缓存
+local THUMBNAIL_TYPE = Enum.ThumbnailType.HeadShot
+local THUMBNAIL_SIZE = Enum.ThumbnailSize.Size180x180
+-- userId -> imageUrl(string) / false(请求过但失败)
+local avatarImageByUserId = {}
+local avatarLoadingByUserId = {}
 
 local function setGuiShown(gui, shown)
 	if not gui then return end
@@ -102,6 +118,64 @@ local function getPlayerDisplayName(player)
 	return player.Name
 end
 
+local renderPlayersPanel
+local function requestRender()
+	if refreshQueued then
+		return
+	end
+
+	refreshQueued = true
+	task.defer(function()
+		refreshQueued = false
+		if renderPlayersPanel then
+			renderPlayersPanel()
+		end
+	end)
+end
+
+local function requestAvatarThumbnail(userId)
+	if typeof(userId) ~= "number" then
+		return
+	end
+	-- 已有缓存 / 正在请求中：直接跳过
+	local cached = avatarImageByUserId[userId]
+	if typeof(cached) == "string" and cached ~= "" then
+		return
+	end
+	if avatarLoadingByUserId[userId] == true then
+		return
+	end
+
+	avatarLoadingByUserId[userId] = true
+
+	task.spawn(function()
+		local imageUrl = nil
+		local isReady = false
+
+		local ok, content, ready = pcall(function()
+			return Players:GetUserThumbnailAsync(userId, THUMBNAIL_TYPE, THUMBNAIL_SIZE)
+		end)
+
+		if ok and typeof(content) == "string" and content ~= "" then
+			imageUrl = content
+			isReady = (ready == true)
+		end
+		avatarLoadingByUserId[userId] = nil
+		-- 只有 ready 的有效图片才缓存
+		if imageUrl ~= nil and isReady == true then
+			avatarImageByUserId[userId] = imageUrl
+			requestRender()
+			return
+		end
+		-- 没 ready / 请求失败：稍后再试一次，但不把 false 永久写死
+		task.delay(1, function()
+			if avatarImageByUserId[userId] == nil and avatarLoadingByUserId[userId] ~= true then
+				requestAvatarThumbnail(userId)
+			end
+		end)
+	end)
+end
+
 local function applyPlayerStateToItem(item, player, state)
 	local frame = item:FindFirstChild("Frame")
 	local textRoot = frame and frame:FindFirstChild("text")
@@ -109,9 +183,23 @@ local function applyPlayerStateToItem(item, player, state)
 	local levelText = textRoot and textRoot:FindFirstChild("num")
 	local hpText = frame and frame:FindFirstChild("HpText")
 	local hpbar = frame and frame:FindFirstChild("hpbar")
+	-- 头像路径：player.Frame.photo.ImageLabel
+	local photoRoot = frame and frame:FindFirstChild("photo")
+	local photoImage = photoRoot and photoRoot:FindFirstChild("ImageLabel")
 
 	if nameText and nameText:IsA("TextLabel") then
 		nameText.Text = getPlayerDisplayName(player)
+	end
+	-- 玩家头像：优先吃缓存；没有就异步请求一次
+	if photoImage and photoImage:IsA("ImageLabel") then
+		local cached = avatarImageByUserId[player.UserId]
+
+		if typeof(cached) == "string" and cached ~= "" then
+			photoImage.Image = cached
+		else
+			photoImage.Image = ""
+			requestAvatarThumbnail(player.UserId)
+		end
 	end
 
 	local levelStr = "-"
@@ -147,7 +235,7 @@ local function applyPlayerStateToItem(item, player, state)
 	end
 end
 
-local function renderPlayersPanel()
+renderPlayersPanel = function()
 	local playersRoot, template = getPlayersPanelRefs()
 	if not playersRoot or not template then
 		return
@@ -178,18 +266,6 @@ local function renderPlayersPanel()
 		local state = doorStateByUserId[player.UserId]
 		applyPlayerStateToItem(item, player, state)
 	end
-end
-
-local function requestRender()
-	if refreshQueued then
-		return
-	end
-
-	refreshQueued = true
-	task.defer(function()
-		refreshQueued = false
-		renderPlayersPanel()
-	end)
 end
 
 RE_DoorState.OnClientEvent:Connect(function(payload)
@@ -223,6 +299,8 @@ end)
 
 Players.PlayerRemoving:Connect(function(player)
 	doorStateByUserId[player.UserId] = nil
+	avatarImageByUserId[player.UserId] = nil
+	avatarLoadingByUserId[player.UserId] = nil
 	requestRender()
 end)
 

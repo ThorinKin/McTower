@@ -13,13 +13,25 @@ local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local BossConfig = require(ReplicatedStorage.Shared.Config.BossConfig)
 
-local function waitRemote(remotes, remoteName, timeoutSec)
+local function waitRemote(remotes, remoteName, _timeoutSec)
 	local re = remotes:FindFirstChild(remoteName)
 	if re and re:IsA("RemoteEvent") then
 		return re
 	end
-	return remotes:WaitForChild(remoteName, timeoutSec or 10)
+
+	while true do
+		local child = remotes.ChildAdded:Wait()
+		if child.Name == remoteName and child:IsA("RemoteEvent") then
+			return child
+		end
+
+		re = remotes:FindFirstChild(remoteName)
+		if re and re:IsA("RemoteEvent") then
+			return re
+		end
+	end
 end
 
 local RE_BossState = waitRemote(Remotes, "Battle_BossState", 10)
@@ -72,6 +84,9 @@ local function getHudRefs()
 	local hpText = frame and frame:FindFirstChild("hpText")
 	local hpBar = frame and frame:FindFirstChild("hpBar")
 	local waveText = frame and frame:FindFirstChild("Wave")
+	-- Boss 头像：HUD.InBattle.Boss.boss.Frame.photo.ImageLabel
+	local photo = frame and frame:FindFirstChild("photo")
+	local photoImage = photo and photo:FindFirstChild("ImageLabel")
 
 	local tip1 = inBattle:FindFirstChild("tip1")
 	local tip2 = inBattle:FindFirstChild("tip2")
@@ -85,6 +100,7 @@ local function getHudRefs()
 		hpText = hpText,
 		hpBar = hpBar,
 		waveText = waveText,
+		photoImage = photoImage,
 
 		tip1 = tip1,
 		tip2 = tip2,
@@ -149,6 +165,9 @@ local function applyBossState(payload)
 
 	if typeof(payload) ~= "table" then
 		setGuiShown(refs.bossRoot, false)
+		if refs.photoImage and refs.photoImage:IsA("ImageLabel") then
+			refs.photoImage.Image = ""
+		end
 		return
 	end
 
@@ -156,6 +175,9 @@ local function applyBossState(payload)
 	setGuiShown(refs.bossRoot, visible)
 
 	if not visible then
+		if refs.photoImage and refs.photoImage:IsA("ImageLabel") then
+			refs.photoImage.Image = ""
+		end
 		return
 	end
 
@@ -186,7 +208,20 @@ local function applyBossState(payload)
 	end
 
 	if refs.waveText and refs.waveText:IsA("TextLabel") then
-		refs.waveText.Text = tostring(wave)
+		refs.waveText.Text = string.format("WAVE: %d", wave)
+	end
+	-- Boss icon：优先 payload.icon，兜底读 BossConfig[bossId].Icon
+	if refs.photoImage and refs.photoImage:IsA("ImageLabel") then
+		local icon = payload.icon
+
+		if (typeof(icon) ~= "string" or icon == "") and typeof(payload.bossId) == "string" then
+			local cfg = BossConfig[payload.bossId]
+			if cfg and typeof(cfg.Icon) == "string" then
+				icon = cfg.Icon
+			end
+		end
+
+		refs.photoImage.Image = (typeof(icon) == "string") and icon or ""
 	end
 end
 

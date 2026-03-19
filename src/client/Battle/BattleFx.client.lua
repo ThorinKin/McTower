@@ -9,6 +9,9 @@ local RunService = game:GetService("RunService")
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
+-- Yaw 本地偏移缓存 key 用当前这一个 Yaw 节点对象 塔升级/替换模型时，Yaw 不拿脏的世界坐标继续转，避免模型错位
+local yawLocalOffsetByNode = setmetatable({}, { __mode = "k" })
+
 local function waitRemote(remotes, preferredName, legacyNames)
 	local names = { preferredName }
 	for _, legacyName in ipairs(legacyNames or {}) do
@@ -100,44 +103,6 @@ local function resolveTowerModel(towerRef)
 	return nil
 end
 
-local function rotateYawLocal(yawNode, targetPos)
-	if yawNode == nil or targetPos == nil then
-		return
-	end
-	-- 只做水平旋转：保留当前 X/Z，只改 Y
-	if yawNode:IsA("BasePart") then
-		local p = yawNode.Position
-		local flatDir = Vector3.new(targetPos.X - p.X, 0, targetPos.Z - p.Z)
-		if flatDir.Magnitude <= 0.001 then
-			return
-		end
-		-- Roblox 的 LookVector 朝向是 -Z，所以这里用 atan2(-x, -z)
-		local yawDeg = math.deg(math.atan2(-flatDir.X, -flatDir.Z))
-		-- 补偿：如果某个塔的朝向天然差 90 / 180，直接在 Yaw 节点上挂 Attribute
-		local extraYawDeg = tonumber(yawNode:GetAttribute("YawOffset")) or 0
-		local cur = yawNode.Orientation
-		yawNode.Orientation = Vector3.new(cur.X, yawDeg + extraYawDeg, cur.Z)
-		return
-	end
-	if yawNode:IsA("Model") then
-		local pivot = yawNode:GetPivot()
-		local p = pivot.Position
-		local flatDir = Vector3.new(targetPos.X - p.X, 0, targetPos.Z - p.Z)
-		if flatDir.Magnitude <= 0.001 then
-			return
-		end
-		local yawRad = math.atan2(-flatDir.X, -flatDir.Z)
-		-- 保留当前 X/Z，只改 Y
-		local rx, _, rz = pivot:ToOrientation()
-		-- 预留补偿（弧度）
-		local extraYawDeg = tonumber(yawNode:GetAttribute("YawOffset")) or 0
-		local extraYawRad = math.rad(extraYawDeg)
-		yawNode:PivotTo(
-			CFrame.new(p) * CFrame.fromOrientation(rx, yawRad + extraYawRad, rz)
-		)
-	end
-end
-
 local function getInstanceWorldCFrame(inst)
 	if inst == nil then
 		return nil
@@ -179,6 +144,37 @@ local function setInstanceWorldCFrame(inst, worldCFrame)
 
 		inst:PivotTo(worldCFrame)
 	end
+end
+
+local function rotateYawLocal(towerModel, yawNode, targetPos)
+	if towerModel == nil or yawNode == nil or targetPos == nil then
+		return
+	end
+	local towerCf = getInstanceWorldCFrame(towerModel)
+	local yawCf = getInstanceWorldCFrame(yawNode)
+	if towerCf == nil or yawCf == nil then
+		return
+	end
+	-- 缓存 Yaw 相对整座塔的本地位置偏移
+	-- 后续每次开火都先用塔当前 CFrame 把 Yaw 放回正确位置，再只改 Y 朝向
+	local localOffset = yawLocalOffsetByNode[yawNode]
+	if localOffset == nil then
+		localOffset = towerCf:ToObjectSpace(yawCf).Position
+		yawLocalOffsetByNode[yawNode] = localOffset
+	end
+	local worldPos = towerCf:PointToWorldSpace(localOffset)
+	local flatDir = Vector3.new(targetPos.X - worldPos.X, 0, targetPos.Z - worldPos.Z)
+	if flatDir.Magnitude <= 0.001 then
+		return
+	end
+	-- Roblox 的 LookVector 朝向是 -Z，所以这里用 atan2(-x, -z)
+	local yawDeg = math.deg(math.atan2(-flatDir.X, -flatDir.Z))
+	local extraYawDeg = tonumber(yawNode:GetAttribute("YawOffset")) or 0
+	-- 保留当前 X/Z，只改 Y；位置则强制回到相对塔的正确偏移点
+	local curCf = getInstanceWorldCFrame(yawNode) or yawCf
+	local rx, _, rz = curCf:ToOrientation()
+	local targetCf = CFrame.new(worldPos) * CFrame.fromOrientation(rx, math.rad(yawDeg + extraYawDeg), rz)
+	setInstanceWorldCFrame(yawNode, targetCf)
 end
 
 local function setFxPhysics(inst)
@@ -303,13 +299,15 @@ RE_FX.OnClientEvent:Connect(function(fxType, payload)
 	if typeof(payload) ~= "table" then
 		return
 	end
+
 	if fxType == "TowerShot" then
 		local towerModel = resolveTowerModel(payload.tower)
 		local targetPos = payload.targetPosition
 		if towerModel and typeof(targetPos) == "Vector3" then
 			local yawNode = towerModel:FindFirstChild("Yaw", true)
+
 			-- 先本地转炮塔 Yaw，再从当前塔模型里的 Bullet 模板克隆一发
-			rotateYawLocal(yawNode, targetPos)
+			rotateYawLocal(towerModel, yawNode, targetPos)
 			spawnBulletFx(towerModel, targetPos)
 		end
 

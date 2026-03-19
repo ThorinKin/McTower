@@ -14,6 +14,11 @@ local SPRING_DAMPING_UI_OPEN   = 0.69              -- < 1：有一点点回弹
 local SPRING_FREQ_UI_OPEN      = 2.3              -- 频率越低动画越长，大概 0.3s 左右
 local SPRING_DAMPING_UI_CLOSE  = 0.85             -- 关闭稍粘稠
 local SPRING_FREQ_UI_CLOSE     = 2.6              -- 关比开快一丢
+-- HUD 单独参数：恢复时更快一点，别跟窗口本体共用同一套
+local SPRING_DAMPING_HUD_SHOW   = 0.69
+local SPRING_FREQ_HUD_SHOW      = 2.3
+local SPRING_DAMPING_HUD_HIDE   = 0.85
+local SPRING_FREQ_HUD_HIDE      = 2.6
 -- 1205：弹簧参数（模糊），不需要回弹，走稳重路线
 local SPRING_DAMPING_BLUR      = 1.2              -- > 1：过阻尼，没有回弹
 local SPRING_FREQ_BLUR         = 1.8              -- 模糊慢一点，更像开镜头
@@ -62,6 +67,21 @@ local function activeCount()
 			n += 1
 		else
 			activeScreens[frame] = nil -- 清掉已被销毁/移走的旧引用
+		end
+	end
+	return n
+end
+-- 工具：统计当前真正还开着的窗口
+local function activeOpenCountExcludingClosing()
+	local n = 0
+	for frame in pairs(activeScreens) do
+		if frame and frame.Parent then
+			if not closingScreens[frame] then
+				n += 1
+			end
+		else
+			activeScreens[frame] = nil
+			closingScreens[frame] = nil
 		end
 	end
 	return n
@@ -173,13 +193,11 @@ function UIController.ShowHud(show: boolean)
 		if frame and frame.Parent then
 			local showPos = frame:GetAttribute("ShowPos")
 			local hidePos = frame:GetAttribute("HidePos")
-			-- 防御：属性可能缺失 缺失则跳过
-			if show and showPos then
-				-- tweenTo(frame, showPos, HUD_SPEED, HUD_EASE_STYLE, HUD_EASE_DIR)-- 旧版备份
-				springTo(frame, showPos, SPRING_DAMPING_UI_OPEN, SPRING_FREQ_UI_OPEN)
-			elseif (not show) and hidePos then
-				-- tweenTo(frame, hidePos, HUD_SPEED, HUD_EASE_STYLE, HUD_EASE_DIR)-- 旧版备份
-				springTo(frame, hidePos, SPRING_DAMPING_UI_OPEN, SPRING_FREQ_UI_OPEN)
+			-- 防御：属性缺失则跳过
+			if show and typeof(showPos) == "UDim2" then
+				springTo(frame, showPos, SPRING_DAMPING_HUD_SHOW, SPRING_FREQ_HUD_SHOW)
+			elseif (not show) and typeof(hidePos) == "UDim2" then
+				springTo(frame, hidePos, SPRING_DAMPING_HUD_HIDE, SPRING_FREQ_HUD_HIDE)
 			end
 		end
 	end
@@ -191,9 +209,10 @@ function UIController.closeAll(exclude: string?)
 			UIController.closeScreen(frame.Name, true) -- 批量：延后处理模糊
 		end
 	end
+
 	if not exclude then
 		task.defer(function()
-			if activeCount() == 0 then
+			if activeOpenCountExcludingClosing() == 0 then
 				refreshBlurState()
 				UIController.ShowHud(true)
 				if SoundPlayer and SoundPlayer.playSound then
@@ -334,7 +353,7 @@ end
 
 -- 公开接口：关闭 PlayerGui/Main 下名为 screenName 的窗口 
 -- 入参1： frame 名称
--- 入参2： 是否属于“批量关闭流程”（批量时不反显 HUD/不关模糊）
+-- 入参2： 是否属于批量关闭流程（批量时不反显 HUD/不关模糊）
 -- 入参3： 关闭动画结束后的回调
 function UIController.closeScreen(screenName: string, isAll: boolean?, onClosed: (() -> any)?)
 	local frame = MainGui:FindFirstChild(screenName)
@@ -342,6 +361,12 @@ function UIController.closeScreen(screenName: string, isAll: boolean?, onClosed:
 	-- 开始关闭就标记 closing（影响 blur），但 active 要等动画结束再移除
 	closingScreens[frame] = true
 	refreshBlurState()
+	-- 如果这是最后一个活动窗口：不要等它彻底关完，HUD 立刻开始恢复
+	local showedHudEarly = false
+	if not isAll and activeOpenCountExcludingClosing() == 0 then
+		showedHudEarly = true
+		UIController.ShowHud(true)
+	end
 	local childrenOnly = frame:GetAttribute(SCREEN_CHILD_MODE_ATTR) == true
 	if childrenOnly then
 		task.spawn(function()
@@ -354,11 +379,14 @@ function UIController.closeScreen(screenName: string, isAll: boolean?, onClosed:
 				end
 				-- 1217：HUD/Close 声音仍然只在真正没窗口了才回
 				if not isAll and activeCount() == 0 then
-					UIController.ShowHud(true)
+					if not showedHudEarly then
+						UIController.ShowHud(true)
+					end
 					if SoundPlayer and SoundPlayer.playSound then
 						SoundPlayer.playSound("Close")
 					end
 				end
+
 				if typeof(onClosed) == "function" then
 					pcall(onClosed)
 				end
@@ -367,18 +395,23 @@ function UIController.closeScreen(screenName: string, isAll: boolean?, onClosed:
 	else
 		local hidePos = frame:GetAttribute("HidePos")
 		if typeof(hidePos) ~= "UDim2" then hidePos = CLOSE end
+
 		task.spawn(function()
 			springTo(frame, hidePos, SPRING_DAMPING_UI_CLOSE, SPRING_FREQ_UI_CLOSE, function()
 				frame.Visible = false
 				activeScreens[frame] = nil
 				closingScreens[frame] = nil
 				refreshBlurState()
+
 				if not isAll and activeCount() == 0 then
-					UIController.ShowHud(true)
+					if not showedHudEarly then
+						UIController.ShowHud(true)
+					end
 					if SoundPlayer and SoundPlayer.playSound then
 						SoundPlayer.playSound("Close")
 					end
 				end
+
 				if typeof(onClosed) == "function" then
 					pcall(onClosed)
 				end

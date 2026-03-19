@@ -13,6 +13,8 @@ local DoorConfig = require(ReplicatedStorage.Shared.Config.DoorConfig)
 local DoorService = {}
 DoorService.__index = DoorService
 
+-- 升级防抖
+local UPGRADE_COOLDOWN_SEC = 2 
 -- 修门常量
 local REPAIR_COOLDOWN_SEC = 40
 local REPAIR_DURATION_SEC = 20
@@ -286,19 +288,30 @@ function DoorService:_getRoomSockets(room)
 		warn("[Door] Sockets folder not found in room:", room.Name)
 		return nil, nil
 	end
-
 	local doorSocket = sockets:FindFirstChild("Door")
 	local bossTarget = sockets:FindFirstChild("BossTarget")
-
 	if not doorSocket or not doorSocket:IsA("BasePart") then
 		warn("[Door] Door socket not found in room:", room.Name)
 		return nil, nil
 	end
-
 	if bossTarget and not bossTarget:IsA("BasePart") then
 		bossTarget = nil
 	end
-
+	-- 新命名 Room_1_BossTarget / Room_2_BossTarget ...
+	if bossTarget == nil then
+		for _, obj in ipairs(sockets:GetChildren()) do
+			if obj:IsA("BasePart") then
+				local lowerName = string.lower(obj.Name)
+				if lowerName == "bosstarget" or string.match(lowerName, "bosstarget$") then
+					bossTarget = obj
+					break
+				end
+			end
+		end
+	end
+	if bossTarget and not bossTarget:IsA("BasePart") then
+		bossTarget = nil
+	end
 	return doorSocket, bossTarget
 end
 
@@ -462,6 +475,7 @@ function DoorService:SpawnDoorForRoom(room, ownerUserId)
 		repairEndAt = 0,
 		nextRepairAllowedAt = 0,
 		nextRepairSyncAt = 0,
+		nextUpgradeAllowedAt = 0, -- 升级防抖：服务端 2 秒冷却
 		destroyed = false,
 	}
 	self.doorsByRoom[room] = door
@@ -509,30 +523,34 @@ function DoorService:TryUpgradeDoor(player)
 	if door.destroyed then
 		return false
 	end
-
 	local nextLevel = door.level + 1
 	local maxLevel = self:_getMaxLevel(door.doorId)
 	if nextLevel > maxLevel then
 		return false
 	end
-
+	local now = time()
+	local prevUpgradeAllowedAt = door.nextUpgradeAllowedAt or 0
+	if now < prevUpgradeAllowedAt then
+		return false
+	end
 	if not self:_hasDoorAssetLevel(door.doorId, nextLevel) then
 		warn("[Door] upgrade asset missing:", door.doorId, "Lv" .. tostring(nextLevel))
 		return false
 	end
-
 	local cost = self:_getUpgradeCost(door.doorId, door.level)
 	if cost == nil then
 		return false
 	end
-
+	-- 先占住升级窗口，防止极快连点 / 连发请求
+	door.nextUpgradeAllowedAt = now + UPGRADE_COOLDOWN_SEC
 	if not self.currency:SpendMoney(player.UserId, cost, "UpgradeDoor") then
+		door.nextUpgradeAllowedAt = prevUpgradeAllowedAt
 		return false
 	end
-
 	local okReplace = self:_replaceDoorModel(door, nextLevel)
 	if not okReplace then
-		-- 理论上不会走到这里；真走到这里就退钱
+		-- 理论上不会走到这里；真走到这里就退钱，并恢复升级窗口
+		door.nextUpgradeAllowedAt = prevUpgradeAllowedAt
 		self.currency:AddMoney(player.UserId, cost, "UpgradeDoorRefund")
 		return false
 	end
