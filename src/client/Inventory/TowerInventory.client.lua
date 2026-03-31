@@ -698,6 +698,7 @@ local function renderInventoryList()
 	clearRenderedList(refs)
 
 	local unlockedTowerIds = getUnlockedTowerIds()
+	local equippedSet = buildEquippedSet()
 	-- 模板上如果挂了 Hover 参数，这里透传给真正吃输入的 TextButton
 	local templateHoverEnabled = refs.itemTemplate:GetAttribute("HoverEffect") == true
 	local templateHoverScale = refs.itemTemplate:GetAttribute("HoverScale")
@@ -713,10 +714,16 @@ local function renderInventoryList()
 			item.Visible = true
 			item.Parent = refs.scrolling
 
-			local button = findPath(item, "Frame", "TextButton")
+			local frame = item:FindFirstChild("Frame")
+			local button = frame and frame:FindFirstChild("TextButton")
+			local mark = frame and frame:FindFirstChild("Mark")
 			local nameText = button and button:FindFirstChild("Name")
 			local icon = button and button:FindFirstChild("Icon")
 			local priceText = button and button:FindFirstChild("Price")
+
+			if mark and mark:IsA("ImageLabel") then
+				mark.Visible = (equippedSet[towerId] == true)
+			end
 
 			if button and button:IsA("TextButton") then
 				button:SetAttribute("TowerInventoryItemButton", true)

@@ -117,41 +117,6 @@ local function setInstanceWorldPositionKeepRotation(inst, worldPosition)
 	end
 end
 
-local function setInstanceWorldCFrame(inst, worldCFrame)
-	if not inst or not worldCFrame then
-		return
-	end
-
-	if inst:IsA("BasePart") then
-		inst.CFrame = worldCFrame
-		return
-	end
-
-	if inst:IsA("Model") then
-		local root = inst.PrimaryPart
-		if root == nil then
-			for _, obj in ipairs(inst:GetDescendants()) do
-				if obj:IsA("BasePart") then
-					root = obj
-					break
-				end
-			end
-			if root and inst.PrimaryPart == nil then
-				pcall(function()
-					inst.PrimaryPart = root
-				end)
-			end
-		end
-
-		if inst.PrimaryPart then
-			inst:SetPrimaryPartCFrame(worldCFrame)
-			return
-		end
-
-		inst:PivotTo(worldCFrame)
-	end
-end
-
 local function setIndicatorPhysics(inst)
 	if not inst then
 		return

@@ -766,7 +766,8 @@ function TowerService:SpawnTowerAtCell(room, cellIndex, towerId, ownerUserId, le
 		isBed = options.isBed == true,
 
 		incomeAcc = 0,
-		-- 新建塔先给客户端一点模型稳定窗口
+		-- 新建塔和升级塔一样，先给客户端一点模型稳定窗口
+		-- 避免模型刚克隆到格子上时，立刻开火触发本地 Yaw 旋转，把整座塔带偏
 		nextAttackAt = time() + NO_TARGET_RETRY_SEC,
 		nextUpgradeAllowedAt = 0, -- 升级防抖：服务端 1 秒冷却
 	}

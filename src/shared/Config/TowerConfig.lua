@@ -181,7 +181,7 @@ local TowerConfig = {
 		Name = "Bed",
 		Icon = "rbxassetid://110757637107221",
 		Type = "Economy",
-		MoneyPerSec = { 5, 10, 20, 40, 80 },
+		MoneyPerSec = { 3, 6, 12, 24, 48 },
 		Price      = { 0, 150, 200, 250, 300 },
 		SellPrice  = { 75, 84, 112, 140, 168 },
 	},

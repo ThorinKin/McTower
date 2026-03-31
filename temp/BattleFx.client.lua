@@ -34,16 +34,14 @@ end
 local RE_FX = waitRemote(Remotes, "Battle_FX", { "Battle_Fx" })
 local RE_ClientReady = Remotes:WaitForChild("Battle_ClientReady")
 
-local TOWER_RENDER_DISTANCE = 40 -- 塔本体距离裁剪：其他玩家的塔超距离本地隐藏
-local TOWER_CULL_INTERVAL_SEC = 1 -- 不必每帧扫塔，1 秒做一次本地裁剪
+local TOWER_RENDER_DISTANCE = 40 -- 塔本体距离裁剪：只保留自己塔常驻，其他玩家的塔超过这个距离就本地隐藏
+local TOWER_CULL_INTERVAL_SEC = 0.2 -- 不必每帧扫塔，0.2 秒做一次本地裁剪够用了
 
--- 塔本体本地隐藏缓存：只做客户端渲染裁剪，不改服务器权威状态 不用弱表
-local towerHiddenByModel = {}
-local savedLocalTransparencyByPart = {}
-local savedEnabledByObject = {}
-local savedTransparencyByTexture = {}
+-- 塔本体本地隐藏缓存：只做客户端渲染裁剪，不改服务器权威状态
+local towerHiddenByModel = setmetatable({}, { __mode = "k" })
+local savedLocalTransparencyByPart = setmetatable({}, { __mode = "k" })
+local savedEnabledByObject = setmetatable({}, { __mode = "k" })
 local towerCullAcc = 0
-local cullRefreshQueued = false
 
 local fxFolder = Workspace:FindFirstChild("ClientBattleFx")
 if not fxFolder then
@@ -181,7 +179,7 @@ local function rotateYawLocal(towerModel, yawNode, targetPos)
 	if flatDir.Magnitude <= 0.001 then
 		return
 	end
-	-- Roblox LookVector 朝向是 -Z，所以用 atan2(-x, -z)
+	-- Roblox 的 LookVector 朝向是 -Z，所以这里用 atan2(-x, -z)
 	local yawDeg = math.deg(math.atan2(-flatDir.X, -flatDir.Z))
 	local extraYawDeg = tonumber(yawNode:GetAttribute("YawOffset")) or 0
 	-- 保留当前 X/Z，只改 Y；位置则强制回到相对塔的正确偏移点
@@ -362,17 +360,6 @@ local function getTowerModelsInScene(scene)
 	return result
 end
 
-local function isTowerDescendant(obj)
-	local cur = obj
-	while cur do
-		if cur.Name == "Towers" and cur:IsA("Folder") then
-			return true
-		end
-		cur = cur.Parent
-	end
-	return false
-end
-
 local function setEffectEnabledForCull(obj, enabled)
 	if obj:IsA("ParticleEmitter")
 		or obj:IsA("Trail")
@@ -401,32 +388,18 @@ local function setEffectEnabledForCull(obj, enabled)
 	end
 end
 
-local function setTextureTransparencyForCull(obj, hidden)
-	if obj:IsA("Texture") or obj:IsA("Decal") then
-		if hidden then
-			if savedTransparencyByTexture[obj] == nil then
-				savedTransparencyByTexture[obj] = obj.Transparency
-			end
-			obj.Transparency = 1
-		else
-			local saved = savedTransparencyByTexture[obj]
-			if saved ~= nil then
-				obj.Transparency = saved
-				savedTransparencyByTexture[obj] = nil
-			end
-		end
-	end
-end
-
 local function setTowerModelHidden(model, hidden)
 	if model == nil then
 		return
 	end
 
+	local currentHidden = towerHiddenByModel[model] == true
+	if currentHidden == hidden then
+		return
+	end
+
 	towerHiddenByModel[model] = hidden == true or nil
 
-	-- 塔可能刚生成 / 刚升级，后续还有部件和特效陆续复制进来
-	-- 所以这里每次都全量过一遍当前 descendants
 	for _, obj in ipairs(model:GetDescendants()) do
 		if obj:IsA("BasePart") then
 			if hidden then
@@ -443,33 +416,6 @@ local function setTowerModelHidden(model, hidden)
 			end
 		else
 			setEffectEnabledForCull(obj, not hidden)
-			setTextureTransparencyForCull(obj, hidden)
-		end
-	end
-end
-
-local function cleanupCullCaches()
-	for model, _ in pairs(towerHiddenByModel) do
-		if model == nil or model.Parent == nil then
-			towerHiddenByModel[model] = nil
-		end
-	end
-
-	for part, _ in pairs(savedLocalTransparencyByPart) do
-		if part == nil or part.Parent == nil then
-			savedLocalTransparencyByPart[part] = nil
-		end
-	end
-
-	for obj, _ in pairs(savedEnabledByObject) do
-		if obj == nil or obj.Parent == nil then
-			savedEnabledByObject[obj] = nil
-		end
-	end
-
-	for obj, _ in pairs(savedTransparencyByTexture) do
-		if obj == nil or obj.Parent == nil then
-			savedTransparencyByTexture[obj] = nil
 		end
 	end
 end
@@ -478,7 +424,6 @@ local function restoreAllTowerVisibility()
 	for model in pairs(towerHiddenByModel) do
 		setTowerModelHidden(model, false)
 	end
-	cleanupCullCaches()
 end
 
 local function refreshTowerDistanceCulling()
@@ -502,7 +447,6 @@ local function refreshTowerDistanceCulling()
 		local ownerUserId = root and tonumber(root:GetAttribute("TowerOwnerUserId")) or nil
 		local shouldHide = false
 
-		-- 只有别人的塔才做裁剪；自己的塔始终显示
 		if root and ownerUserId ~= nil and ownerUserId ~= LocalPlayer.UserId then
 			local dist = (hrp.Position - root.Position).Magnitude
 			if dist > TOWER_RENDER_DISTANCE then
@@ -518,20 +462,6 @@ local function refreshTowerDistanceCulling()
 			towerHiddenByModel[model] = nil
 		end
 	end
-
-	cleanupCullCaches()
-end
-
-local function requestCullRefresh()
-	if cullRefreshQueued then
-		return
-	end
-
-	cullRefreshQueued = true
-	task.defer(function()
-		cullRefreshQueued = false
-		refreshTowerDistanceCulling()
-	end)
 end
 
 RE_FX.OnClientEvent:Connect(function(fxType, payload)
@@ -557,56 +487,7 @@ RE_FX.OnClientEvent:Connect(function(fxType, payload)
 	end
 end)
 
-RunService.Heartbeat:Connect(function(dt)
-	towerCullAcc += dt
-	if towerCullAcc < TOWER_CULL_INTERVAL_SEC then
-		return
-	end
-
-	towerCullAcc = 0
-	refreshTowerDistanceCulling()
-end)
-
-LocalPlayer:GetAttributeChangedSignal("BattleIsSession"):Connect(function()
-	requestCullRefresh()
-end)
-
-Workspace.ChildAdded:Connect(function(child)
-	if child.Name == "ActiveScene" then
-		requestCullRefresh()
-	end
-end)
-
-Workspace.ChildRemoved:Connect(function(child)
-	if child.Name == "ActiveScene" then
-		task.defer(function()
-			restoreAllTowerVisibility()
-		end)
-	end
-end)
-
-Workspace.DescendantAdded:Connect(function(desc)
-	if desc:IsA("Model") or desc:IsA("BasePart") or desc:IsA("Texture") or desc:IsA("Decal") then
-		if isTowerDescendant(desc) then
-			requestCullRefresh()
-		end
-	end
-end)
-
-Workspace.DescendantRemoving:Connect(function(desc)
-	if desc:IsA("Model") or desc:IsA("BasePart") or desc:IsA("Texture") or desc:IsA("Decal") then
-		if isTowerDescendant(desc) then
-			requestCullRefresh()
-		end
-	end
-end)
-
-LocalPlayer.CharacterAdded:Connect(function()
-	requestCullRefresh()
-end)
-
 -- 监听挂好后再告诉服务端可以接 FX 了
 task.defer(function()
-	refreshTowerDistanceCulling()
 	RE_ClientReady:FireServer("FX")
 end)

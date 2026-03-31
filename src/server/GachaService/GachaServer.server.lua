@@ -14,6 +14,7 @@ local TowerConfig = require(ReplicatedStorage.Shared.Config.TowerConfig)
 
 local EcoModule = require(ServerScriptService.Server.EcoService.EcoModule)
 local TowerModule = require(ServerScriptService.Server.TowerService.TowerModule)
+local StatsModule = require(ServerScriptService.Server.StatsService.StatsModule)
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
@@ -174,6 +175,8 @@ local function draw(player, poolId, drawCount)
 	for towerId in pairs(toUnlockMap) do
 		TowerModule.unlockTower(player, towerId, "Gacha:" .. poolId)
 	end
+
+	StatsModule.add(player, StatsModule.KEY.GachaDrawCount, count, "Gacha:" .. poolId)
 
 	return true, {
 		action = "Reveal",

@@ -4,6 +4,7 @@
 -- 2. 监听 Battle_Tip，同步 HUD.InBattle.tip1 / tip2
 -- 3. boss 出现前隐藏 boss 根 Frame
 -- 4. tip 支持持续显示 / 定时自动隐藏
+-- 5. tip2 关闭显示逻辑：客户端不再主动显示 tip2，保持 UI 默认状态
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -125,6 +126,13 @@ local function setTip(channel, text, durationSec)
 	end
 
 	text = tostring(text or "")
+	-- tip2 关闭
+	if channel == "tip2" then
+		label.Text = ""
+		label.Visible = false
+		tipHideToken[channel] += 1
+		return
+	end
 
 	if text == "" then
 		label.Text = ""
@@ -239,10 +247,10 @@ local function refreshVisibleState()
 		refs.tip1.Visible = battle
 	end
 
-	if refs.tip2 and refs.tip2:IsA("TextLabel") and refs.tip2.Text == "" then
+	-- tip2 关闭
+	if refs.tip2 then
+		refs.tip2.Text = ""
 		refs.tip2.Visible = false
-	elseif refs.tip2 then
-		refs.tip2.Visible = battle
 	end
 
 	if refs.bossRoot and refs.bossRoot.Visible == true then

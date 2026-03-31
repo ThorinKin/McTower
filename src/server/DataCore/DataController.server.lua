@@ -9,9 +9,11 @@ local DataStore2 = require(ServerScriptService:WaitForChild("DataStore2"))
 
 -- 总管所有数据库相关模块------------------------------------------
 local Modules = {
-	require(ServerScriptService.Server.EcoService.EcoModule),       -- 经济
-	require(ServerScriptService.Server.TowerService.TowerModule),   -- 塔背包/装备
+	require(ServerScriptService.Server.EcoService.EcoModule),         -- 经济
+	require(ServerScriptService.Server.TowerService.TowerModule),     -- 塔背包/装备
 	require(ServerScriptService.Server.DungeonService.DungeonModule), -- 副本进度
+	require(ServerScriptService.Server.TutorialService.TutorialModule), -- 新手教程
+	require(ServerScriptService.Server.StatsService.StatsModule),     -- 长期统计数据
 }
 local SAVE_INTERVAL = 60  -- 定时 SaveAll（秒）（仅线上开）
 -----------------------------------------------------------------

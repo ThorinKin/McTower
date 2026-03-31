@@ -11,9 +11,11 @@ local MemoryStoreService = game:GetService("MemoryStoreService")
 local MessagingService = game:GetService("MessagingService")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local MatchDefs = require(ReplicatedStorage.Shared.Match.MatchDefs)
 local DungeonConfig = require(ReplicatedStorage.Shared.Config.DungeonConfig)
+local AnalyticsModule = require(ServerScriptService.Server.AnalyticsService.AnalyticsModule)
 
 local MatchmakingService = {}
 
@@ -77,6 +79,39 @@ local function clearTicketMappings(memberUserIds, expectedTicketId)
 			setPlayerQueueAttrs(userId, nil)
 		end
 	end
+end
+
+local function getPlayerReplayAfterTutorialFunnelSessionId(player)
+	if not player then
+		return nil
+	end
+	if player:GetAttribute("ReplayAfterTutorialPending") ~= true then
+		return nil
+	end
+	local funnelSessionId = player:GetAttribute("ReplayAfterTutorialFunnelSessionId")
+	if typeof(funnelSessionId) ~= "string" or funnelSessionId == "" then
+		return nil
+	end
+	return funnelSessionId
+end
+
+local function markReplayQueueStartedIfNeeded(player)
+	if not player then
+		return nil
+	end
+
+	local funnelSessionId = getPlayerReplayAfterTutorialFunnelSessionId(player)
+	if funnelSessionId == nil then
+		return nil
+	end
+
+	if player:GetAttribute("ReplayAfterTutorialQueueStartedLogged") == true then
+		return funnelSessionId
+	end
+
+	AnalyticsModule.logReplayStartedNonTutorialQueue(player, funnelSessionId)
+	player:SetAttribute("ReplayAfterTutorialQueueStartedLogged", true)
+	return funnelSessionId
 end
 
 local function validateRequest(dungeonKey, difficulty, partySize)
@@ -159,11 +194,14 @@ function MatchmakingService.CancelByUserId(userId, sendCanceled)
 	return true
 end
 
-local function enqueuePartyInternal(memberUserIds, dungeonKey, difficulty, partySize, leaderUserId, enqueuedAt)
+local function enqueuePartyInternal(memberUserIds, dungeonKey, difficulty, partySize, leaderUserId, enqueuedAt, options)
 	local ok, err = validateRequest(dungeonKey, difficulty, partySize)
 	if not ok then
 		return false, err
 	end
+
+	options = options or {}
+	local tutorialFlag = (options.tutorial == true)
 
 	local userIds = normalizeUserIdList(memberUserIds)
 	if #userIds <= 0 then
@@ -196,6 +234,7 @@ local function enqueuePartyInternal(memberUserIds, dungeonKey, difficulty, party
 		partySize = partySize,
 
 		claimedBy = nil,
+		tutorial = tutorialFlag,
 	}
 
 	queueMap:SetAsync(ticketId, value, TICKET_TTL_SEC, now)
@@ -222,10 +261,22 @@ local function enqueuePartyInternal(memberUserIds, dungeonKey, difficulty, party
 		partySize = partySize,
 	}
 
+	for _, userId in ipairs(userIds) do
+		local player = Players:GetPlayerByUserId(userId)
+		if player then
+			if tutorialFlag == true then
+				AnalyticsModule.logTutorialQueueStarted(player, ticketId)
+			else
+				AnalyticsModule.logBattleQueueStarted(player, ticketId, dungeonKey, difficulty, partySize)
+				markReplayQueueStartedIfNeeded(player)
+			end
+		end
+	end
+
 	return true, info
 end
 
-function MatchmakingService.EnqueueSolo(player, dungeonKey, difficulty, partySize)
+function MatchmakingService.EnqueueSolo(player, dungeonKey, difficulty, partySize, options)
 	if not player then
 		return false, "player missing"
 	end
@@ -236,7 +287,8 @@ function MatchmakingService.EnqueueSolo(player, dungeonKey, difficulty, partySiz
 		difficulty,
 		partySize,
 		player.UserId,
-		os.time()
+		os.time(),
+		options
 	)
 end
 
@@ -253,7 +305,8 @@ function MatchmakingService.EnqueuePartyPlayers(playersOrUserIds, dungeonKey, di
 		difficulty,
 		partySize,
 		leaderUserId,
-		enqueuedAt
+		enqueuedAt,
+		options
 	)
 end
 
@@ -427,6 +480,28 @@ local function tryMakeMatch(queueKey, queueInfo)
 		clearTicketMappings(it.value.memberUserIds or {}, nil)
 	end
 
+	local tutorialSession = false
+	for _, it in ipairs(claimed) do
+		if it.value and it.value.tutorial == true then
+			tutorialSession = true
+			break
+		end
+	end
+
+	local funnelSessionIdMapByUserId = {}
+	local replayAfterTutorialFunnelIdMapByUserId = {}
+	for _, it in ipairs(claimed) do
+		local ticketId = it.key
+		for _, userId in ipairs(it.value.memberUserIds or {}) do
+			funnelSessionIdMapByUserId[tostring(userId)] = ticketId
+			local player = Players:GetPlayerByUserId(userId)
+			local replayFunnelId = getPlayerReplayAfterTutorialFunnelSessionId(player)
+			if replayFunnelId ~= nil then
+				replayAfterTutorialFunnelIdMapByUserId[tostring(userId)] = replayFunnelId
+			end
+		end
+	end
+
 	local sessionData = {
 		accessCode = accessCode,
 		privateServerId = privateServerId,
@@ -434,6 +509,9 @@ local function tryMakeMatch(queueKey, queueInfo)
 		difficulty = queueInfo.difficulty,
 		partySize = claimedMemberTotal,
 		createdAt = now,
+		tutorial = tutorialSession,
+		funnelSessionIdMapByUserId = funnelSessionIdMapByUserId,
+		replayAfterTutorialFunnelIdMapByUserId = replayAfterTutorialFunnelIdMapByUserId,
 	}
 
 	SESSION_MAP:SetAsync(sessionId, sessionData, SESSION_TTL_SEC, now)
@@ -485,6 +563,9 @@ local function teleportPlayersToSession(sessionId, userIds)
 		dungeonKey = sessionData.dungeonKey,
 		difficulty = sessionData.difficulty,
 		partySize = sessionData.partySize,
+		tutorial = sessionData.tutorial == true,
+		funnelSessionIdMapByUserId = sessionData.funnelSessionIdMapByUserId,
+		replayAfterTutorialFunnelIdMapByUserId = sessionData.replayAfterTutorialFunnelIdMapByUserId,
 	}
 
 	for _, player in ipairs(toTeleport) do

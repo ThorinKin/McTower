@@ -3,6 +3,10 @@
 -- 遍历 Rooms 文件夹，每个 Room 统一带 Capture 文件夹，内含 part 作为触发器（锚定/关碰撞/可触摸/不可查询），监听，第一次触碰即占领
 -- 每个 Room 统一带 Cells 文件夹，内含约几十个 part 作为摆放塔的格子（锚定/关碰撞/不可触摸/可查询）
 local Players = game:GetService("Players")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local StatsModule = require(ServerScriptService.Server.StatsService.StatsModule)
+local AnalyticsModule = require(ServerScriptService.Server.AnalyticsService.AnalyticsModule)
 
 local TerritoryService = {}
 TerritoryService.__index = TerritoryService
@@ -211,6 +215,21 @@ function TerritoryService:TryClaimRoom(player, room)
 	r.conns = {}
 	-- 调试
 	print(string.format("[Territory] claimed. room=%s userId=%d", room.Name, player.UserId))
+
+	StatsModule.add(player, StatsModule.KEY.RoomClaimCount, 1, "BattleClaimRoom")
+
+	local battleFunnelSessionId = player:GetAttribute("BattleFunnelSessionId")
+	local replayAfterTutorialFunnelSessionId = player:GetAttribute("ReplayAfterTutorialFunnelSessionId")
+	local ctx = self.session and self.session.ctx or {}
+	if player:GetAttribute("BattleTutorialSession") == true then
+		AnalyticsModule.logTutorialRoomClaimed(player, battleFunnelSessionId)
+	else
+		AnalyticsModule.logBattleRoomClaimed(player, battleFunnelSessionId, ctx.dungeonKey, ctx.difficulty, ctx.partySize)
+	end
+	if typeof(replayAfterTutorialFunnelSessionId) == "string" and replayAfterTutorialFunnelSessionId ~= "" then
+		AnalyticsModule.logReplayRoomClaimed(player, replayAfterTutorialFunnelSessionId)
+	end
+
 	-- 占领事件：DoorService / TowerService 可绑定
 	for _, callback in ipairs(self.onRoomClaimed) do
 		local ok, err = pcall(function()

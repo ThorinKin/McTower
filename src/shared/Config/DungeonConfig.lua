@@ -5,6 +5,7 @@ local DungeonConfig = {
 	Level_1 = {
 		Id = "Level_1",
 		Name = "Forest",
+		Icon = "rbxassetid://96997154528630",
 		DoorId = "door_1",
 		BossId = "boss_1",
 
@@ -22,7 +23,7 @@ local DungeonConfig = {
 
 		StartMoney = {
 			-- Easy    = 30000, -- 测试
-			Easy    = 300, 
+			Easy    = 350, 
 			Normal  = 700,
 			Hard    = 1500,
 			Endless = 1500,
@@ -64,6 +65,7 @@ local DungeonConfig = {
 	Level_2 = {
 		Id = "Level_2",
 		Name = "Level_2",
+		Icon = "rbxassetid://96997154528630",
 		DoorId = "door_1",
 		BossId = "boss_1",
 

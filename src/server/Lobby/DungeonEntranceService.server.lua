@@ -259,6 +259,16 @@ local function isPlayerQueueing(player)
 	return player:GetAttribute("MMTicketId") ~= nil
 end
 
+local function isTutorialLobbyBlocked(player)
+	if not player then
+		return false
+	end
+	if player:GetAttribute("TutorialDone") == true then
+		return false
+	end
+	return true
+end
+
 local function getEjectCFrame(entrance)
 	local collide = entrance.collide
 	local y = collide.Size.Y * 0.5 + 4
@@ -615,7 +625,9 @@ local function tickIdle(entrance)
 	local valid = {}
 
 	for _, player in ipairs(occupants) do
-		if isPlayerQueueing(player) then
+		if isTutorialLobbyBlocked(player) then
+			-- 新手教程玩家由 TutorialService.server.lua 统一接管，这里不参与普通组队区状态机
+		elseif isPlayerQueueing(player) then
 			ejectPlayerFromEntrance(entrance, player)
 		else
 			table.insert(valid, player)
@@ -669,7 +681,9 @@ local function tickGatheringLocal(entrance)
 	local keepPlayers = {}
 
 	for _, player in ipairs(occupants) do
-		if isPlayerQueueing(player) then
+		if isTutorialLobbyBlocked(player) then
+			-- 新手教程玩家不参与普通 GatheringLocal
+		elseif isPlayerQueueing(player) then
 			ejectPlayerFromEntrance(entrance, player)
 		else
 			table.insert(keepPlayers, player)

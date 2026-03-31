@@ -14,6 +14,8 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local DungeonConfig = require(ReplicatedStorage.Shared.Config.DungeonConfig)
 local EcoModule = require(ServerScriptService.Server.EcoService.EcoModule)
 local DungeonModule = require(ServerScriptService.Server.DungeonService.DungeonModule)
+local StatsModule = require(ServerScriptService.Server.StatsService.StatsModule)
+local AnalyticsModule = require(ServerScriptService.Server.AnalyticsService.AnalyticsModule)
 
 local ResultService = {}
 ResultService.__index = ResultService
@@ -43,6 +45,28 @@ local function clampNonNegInt(v)
 		n = 0
 	end
 	return math.floor(n)
+end
+
+local function getBattleFunnelSessionId(player)
+	if not player then
+		return nil
+	end
+	local value = player:GetAttribute("BattleFunnelSessionId")
+	if typeof(value) == "string" and value ~= "" then
+		return value
+	end
+	return nil
+end
+
+local function getReplayAfterTutorialFunnelSessionId(player)
+	if not player then
+		return nil
+	end
+	local value = player:GetAttribute("ReplayAfterTutorialFunnelSessionId")
+	if typeof(value) == "string" and value ~= "" then
+		return value
+	end
+	return nil
 end
 
 function ResultService.new(session)
@@ -222,6 +246,21 @@ function ResultService:_scheduleReturn(player, delaySec)
 			return
 		end
 
+		local replayAfterTutorialFunnelSessionId = getReplayAfterTutorialFunnelSessionId(latestPlayer)
+		if replayAfterTutorialFunnelSessionId ~= nil then
+			local teleportOptions = Instance.new("TeleportOptions")
+			teleportOptions:SetTeleportData({
+				replayAfterTutorialFunnelSessionId = replayAfterTutorialFunnelSessionId,
+			})
+
+			local okTp = pcall(function()
+				TeleportService:TeleportAsync(game.PlaceId, { latestPlayer }, teleportOptions)
+			end)
+			if okTp then
+				return
+			end
+		end
+
 		pcall(function()
 			TeleportService:Teleport(game.PlaceId, latestPlayer)
 		end)
@@ -300,6 +339,29 @@ function ResultService:_settlePlayer(player, isWin, reason, returnDelaySec)
 		reason = reason,
 		payload = payload,
 	}
+
+	local statsDelta = {
+		[StatsModule.KEY.BattleCount] = 1,
+	}
+	if isWin == true then
+		statsDelta[StatsModule.KEY.BattleWinCount] = 1
+	else
+		statsDelta[StatsModule.KEY.BattleLoseCount] = 1
+	end
+	StatsModule.addMulti(player, statsDelta, isWin and "BattleWin" or "BattleLose")
+
+	local battleFunnelSessionId = getBattleFunnelSessionId(player)
+	if player:GetAttribute("BattleTutorialSession") == true then
+		AnalyticsModule.logTutorialFinish(player, battleFunnelSessionId)
+	else
+		local ctx = self.session and self.session.ctx or {}
+		AnalyticsModule.logBattleSettled(player, battleFunnelSessionId, ctx.dungeonKey, ctx.difficulty, ctx.partySize)
+	end
+
+	local replayAfterTutorialFunnelSessionId = getReplayAfterTutorialFunnelSessionId(player)
+	if replayAfterTutorialFunnelSessionId ~= nil then
+		AnalyticsModule.logReplayBattleSettled(player, replayAfterTutorialFunnelSessionId)
+	end
 
 	self.RE_ResultState:FireClient(player, payload)
 	self:_scheduleReturn(player, returnDelaySec)
